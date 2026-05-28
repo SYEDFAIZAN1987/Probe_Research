@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+venv/
+.venv/
+env/
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project data — never commit
+# Attention caches, gaze rasterizations, per-case metric outputs are
+# regeneratable from cached attention; nothing in data/ goes to git.
+data/
+
+# Large model artifacts (in case any sneak into the repo by accident)
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.gguf
+*.ckpt
+
+# HF / spacy model caches (if anything lands locally)
+.cache/
+hf_cache/
+
+# Logs / temp / scratch
+*.log
+*.tmp
+scratch/
+tmp/
+
+# Outputs
+wandb/
+runs/
+outputs/
+
+# Paper build artifacts
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.toc
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.synctex.gz
+paper/main.pdf  # built PDF — regenerate from .tex

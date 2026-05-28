@@ -1,0 +1,61 @@
+# GazeProbe requirements
+#
+# Loose lower-bound pins by design — exact pins frozen after week 2
+# once we know all three models load cleanly together in one env.
+#
+# Notes that have already cost time elsewhere (see user memory):
+#   * Do NOT add sae-lens. It force-upgrades torch/transformers and
+#     breaks the inference chain.
+#   * After any torch downgrade/reinstall, verify by actual import
+#     chain:  python -c "from transformers import AutoProcessor"
+#     (just `import torch` is not enough — leaves orphan files).
+#   * bitsandbytes is Linux / WSL only. On native Windows use AWQ or
+#     run inference on RunPod (the planned path).
+#
+# Python: 3.10 or 3.11 (3.12 not yet tested with bitsandbytes nf4).
+
+# --- Core inference -----------------------------------------------------
+torch>=2.4,<3.0
+transformers>=4.45            # MedGemma / Gemma-3 support
+accelerate>=0.34
+safetensors>=0.4
+sentencepiece>=0.2
+protobuf>=4.25
+huggingface_hub>=0.25
+
+# --- Quantization -------------------------------------------------------
+bitsandbytes>=0.43            # Linux / WSL only
+# autoawq>=0.2                # uncomment if switching from bnb to AWQ
+
+# --- Image + data -------------------------------------------------------
+pillow>=10.0
+numpy>=1.26,<3.0
+scipy>=1.11                   # Gaussian KDE for gaze rasterization
+pandas>=2.0
+pyarrow>=14.0                 # parquet I/O for per-case metrics
+matplotlib>=3.8
+
+# --- Medical eval -------------------------------------------------------
+# RadGraph-XL via Stanford-AIMI release. Pin loosely; verify on install
+# that radgraph-xl model weights download cleanly.
+radgraph>=0.1
+
+# RaTEScore — pin after first install confirms package name
+# (some 2024 releases use `ratescore`, others use `rate-score`).
+# Document the actual pin here once verified in week 1.
+
+# --- NLP utilities ------------------------------------------------------
+spacy>=3.7,<4.0
+# scispacy + en_core_sci_sm installed separately per scispacy docs:
+#   pip install scispacy
+#   pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
+scispacy>=0.5.4
+nltk>=3.8                     # stopwords for per-sentence aggregation
+
+# --- HuggingFace datasets (only if needed for caching) ------------------
+datasets>=2.20
+
+# --- Dev / notebooks ----------------------------------------------------
+jupyter>=1.0
+ipykernel>=6.29
+tqdm>=4.66
