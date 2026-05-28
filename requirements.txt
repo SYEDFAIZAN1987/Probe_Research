@@ -34,6 +34,7 @@ scipy>=1.11                   # Gaussian KDE for gaze rasterization
 pandas>=2.0
 pyarrow>=14.0                 # parquet I/O for per-case metrics
 matplotlib>=3.8
+scikit-learn>=1.4             # roc_auc_score for the AUC alignment metric
 
 # --- Medical eval -------------------------------------------------------
 # RadGraph-XL via Stanford-AIMI release. Pin loosely; verify on install

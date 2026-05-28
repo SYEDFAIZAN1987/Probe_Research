@@ -541,7 +541,7 @@ def main() -> int:
     except Exception as e:
         print(f"[WARN] plot failed: {e}")
 
-    # ---- Recommendation file ------------------------------------------
+    # ---- Recommendation files -----------------------------------------
     rec_path = args.out_dir / "recommendation.md"
     rec_path.write_text(
         f"# MedGemma layer-pilot recommendation\n\n"
@@ -551,6 +551,19 @@ def main() -> int:
         f"Lock this into `docs/extraction-spec.md` §Q1 (MedGemma row).\n"
     )
     print(f"[OK] wrote {rec_path}")
+
+    # JSON sidecar consumed by src.attn.extract_medgemma.MedGemmaExtractor
+    # at runtime, so downstream extraction picks up the pilot's choice
+    # without manual editing.
+    import json
+    window_path = args.out_dir / "layer_window.json"
+    window_path.write_text(json.dumps({
+        "model": args.model_id,
+        "layers": list(range(best_start, best_end + 1)),
+        "mean_kl": float(rolling.min()),
+        "n_cases": int(df["case_idx"].nunique()),
+    }, indent=2))
+    print(f"[OK] wrote {window_path}")
     return 0
 
 
