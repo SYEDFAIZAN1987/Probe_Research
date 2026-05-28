@@ -211,13 +211,15 @@ def main() -> int:
     pd.DataFrame(case_counts).to_csv(args.out_dir / "case_counts_by_phase.csv", index=False)
 
     # 3. Sample trial dirs and print schemas ----------------------------
+    # REFLACX trial dirs under main_data/ are named with a participant+reading
+    # code like "P102R009922" (NOT the dicom_id). The metadata `id` column
+    # matches the directory name. Confirmed against the PhysioNet docs.
     main_data = args.reflacx_root / "main_data"
     if not main_data.exists():
         schema_lines.append(f"[WARN] {main_data} not found — checking alternate layouts")
-        # Sometimes the trial dirs sit at REFLACX root rather than under main_data/
         candidate_trials = [d for d in args.reflacx_root.iterdir() if d.is_dir()]
     else:
-        candidate_trials = list(main_data.iterdir())
+        candidate_trials = [d for d in main_data.iterdir() if d.is_dir()]
 
     sample_trials = candidate_trials[: args.n_trial_samples]
     for trial_dir in sample_trials:
@@ -261,11 +263,13 @@ def main() -> int:
         fix_path = first / "fixations.csv"
         ellipse_path = first / "anomaly_location_ellipses.csv"
         trial_id = first.name
-        # Find this trial's image
-        # REFLACX trial dirs are usually named <reader>_<dicom_id> or just <dicom_id>
-        dicom_guess = trial_id.split("_")[-1]
-        # We use the first metadata frame to look it up:
-        link_row = any_df[any_df["dicom_id"] == dicom_guess]
+        # Look up this trial via the metadata `id` column (REFLACX docs:
+        # the trial directory name is the `id` field). Fall back to
+        # dicom_id matching if `id` isn't present.
+        if "id" in any_df.columns:
+            link_row = any_df[any_df["id"].astype(str) == trial_id]
+        else:
+            link_row = any_df[any_df["dicom_id"].astype(str) == trial_id]
         if not link_row.empty and fix_path.exists():
             row = link_row.iloc[0]
             img_path = resolve_mimic_jpg_path(
@@ -277,7 +281,7 @@ def main() -> int:
                         img_path, pd.read_csv(fix_path),
                         args.out_dir / "fig_fixation_density.png",
                     )
-                    schema_lines.append(f"  wrote fig_fixation_density.png for {dicom_guess}")
+                    schema_lines.append(f"  wrote fig_fixation_density.png for {trial_id}")
                 except Exception as e:
                     schema_lines.append(f"  [WARN] fixation plot failed: {e}")
                 if ellipse_path.exists():
@@ -286,7 +290,7 @@ def main() -> int:
                             img_path, pd.read_csv(ellipse_path),
                             args.out_dir / "fig_bbox_example.png",
                         )
-                        schema_lines.append(f"  wrote fig_bbox_example.png for {dicom_guess}")
+                        schema_lines.append(f"  wrote fig_bbox_example.png for {trial_id}")
                     except Exception as e:
                         schema_lines.append(f"  [WARN] bbox plot failed: {e}")
             else:

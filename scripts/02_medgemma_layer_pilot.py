@@ -35,13 +35,23 @@ After this lands, manually edit docs/extraction-spec.md §Q1's
 MedGemma row to lock the chosen layer window with a citation back to
 data/pilot/medgemma/layer_kl.parquet.
 
-IMPORTANT items to verify on first GPU run (all marked TODO inline):
-  - The image-token detection in find_image_token_positions().
-    Confirm count == 256 and positions are contiguous.
+Verified before write:
+  - REFLACX trial dirs are named like "P102R009922" (participant +
+    reading code) per PhysioNet docs. The metadata `id` column matches
+    the directory name. NOT `dicom_id`.
+  - Gemma 3 prompt-side token is <start_of_image>; processor expands
+    it to 256 <image_soft_token> tokens in input_ids. We use a
+    layered lookup: model.config.image_token_index, then the
+    tokenizer, then a contiguous-256-block scan as defensive fallback.
+  - Assistant range is computed as the diff between tokenizations of
+    [system+user] (with add_generation_prompt=True) and
+    [system+user+assistant] (with add_generation_prompt=False).
+
+One remaining item to verify on first GPU run:
   - That bnb 4-bit + attn_implementation="eager" lets attentions
-    materialize (SDPA backend swallows attention weights silently).
-  - That MedGemma's apply_chat_template lays out
-    [system | user (text + image) | assistant] in that order.
+    materialize. SDPA backend swallows attention weights silently;
+    "eager" is the workaround. Confirm out.attentions is not None
+    on first forward.
 """
 
 from __future__ import annotations
@@ -110,18 +120,19 @@ def select_cases(
     if not main_data.exists():
         raise FileNotFoundError(f"{main_data} not found")
 
+    if "id" not in meta.columns:
+        raise RuntimeError(
+            "REFLACX metadata is missing the `id` column needed to locate trial "
+            f"directories under {main_data}. Columns present: {list(meta.columns)}"
+        )
+
     for _, row in meta.iterrows():
         if len(out) >= n:
             break
         dicom_id = str(row.get("dicom_id"))
-        # Locate trial dir. REFLACX trial dirs are commonly named by trial id
-        # which differs from dicom_id. We look up by the column the metadata
-        # provides for trial identification.
-        trial_id_col = next(
-            (c for c in row.index if "id" in c.lower() and c.lower() != "dicom_id"),
-            None,
-        )
-        trial_id = str(row[trial_id_col]) if trial_id_col else dicom_id
+        # REFLACX trial dirs are named by the metadata `id` field
+        # (e.g. "P102R009922"). Confirmed against PhysioNet docs.
+        trial_id = str(row["id"])
         trial_dir = main_data / trial_id
         if not trial_dir.exists():
             continue
@@ -167,55 +178,115 @@ def select_cases(
 # Image-token detection
 # --------------------------------------------------------------------- #
 
-def find_image_token_positions(input_ids: torch.Tensor, image_token_id: int) -> torch.Tensor:
+def resolve_image_token_id(model, processor, grid_edge: int) -> int:
+    """Find the image-placeholder token id with layered fallbacks.
+
+    Order:
+      1.  model.config.image_token_index — the authoritative attribute
+          on the model config when it's set.
+      2.  processor.tokenizer.convert_tokens_to_ids("<image_soft_token>")
+          — Gemma 3's standard placeholder.
+      3.  Caller (find_image_token_positions) falls back to scanning for
+          a contiguous block of `grid_edge**2` identical tokens.
+    """
+    # (1)
+    tok_id = getattr(model.config, "image_token_index", None)
+    if tok_id is None:
+        tok_id = getattr(getattr(model.config, "text_config", None), "image_token_index", None)
+    if isinstance(tok_id, int) and tok_id > 0:
+        return tok_id
+    # (2)
+    candidate = processor.tokenizer.convert_tokens_to_ids("<image_soft_token>")
+    unk = processor.tokenizer.unk_token_id
+    if candidate is not None and candidate != unk:
+        return candidate
+    # Caller will handle (3)
+    return -1
+
+
+def find_image_token_positions(
+    input_ids: torch.Tensor,
+    image_token_id: int,
+    expected_count: int,
+) -> torch.Tensor:
     """Return indices of image-placeholder tokens in input_ids[0].
 
-    For MedGemma we expect a single contiguous block of 256 image tokens.
-    The script asserts that loudly so a silent layout change can't slip
-    through unnoticed.
+    If image_token_id < 0 (lookup failed), scan for a contiguous block
+    of `expected_count` identical tokens — that's the image span.
+    Either way, assert the final count matches.
     """
     ids = input_ids[0]
-    mask = (ids == image_token_id)
-    positions = mask.nonzero(as_tuple=True)[0]
-    if positions.numel() == 0:
-        raise RuntimeError(
-            f"No image tokens (id={image_token_id}) found in input_ids. "
-            "TODO: confirm the image-token id for this transformers version."
-        )
-    # Check contiguity
-    if positions.numel() > 1:
-        gaps = positions[1:] - positions[:-1]
-        if not (gaps == 1).all():
+    if image_token_id >= 0:
+        positions = (ids == image_token_id).nonzero(as_tuple=True)[0]
+    else:
+        # Defensive fallback: find any contiguous run of identical tokens
+        # of length `expected_count`.
+        positions = torch.tensor([], dtype=torch.long)
+        for start in range(ids.numel() - expected_count + 1):
+            window = ids[start : start + expected_count]
+            if (window == window[0]).all():
+                positions = torch.arange(start, start + expected_count)
+                break
+        if positions.numel() == 0:
             raise RuntimeError(
-                f"Image tokens are not contiguous in input_ids: positions={positions.tolist()}"
+                "Could not locate the image-token span by id OR by "
+                f"contiguous-identical-block scan (looking for {expected_count}). "
+                "Print processor.tokenizer.special_tokens_map and "
+                "model.config to diagnose."
             )
+    if positions.numel() != expected_count:
+        raise RuntimeError(
+            f"Expected {expected_count} image tokens, found {positions.numel()}. "
+            f"positions={positions.tolist()[:10]}..."
+        )
+    gaps = positions[1:] - positions[:-1]
+    if positions.numel() > 1 and not (gaps == 1).all():
+        raise RuntimeError(
+            f"Image tokens not contiguous: positions={positions.tolist()}"
+        )
     return positions
 
 
 def detect_assistant_token_range(
-    input_ids: torch.Tensor,
     processor,
-    last_n_to_skip: int = 0,
+    messages_without_assistant: list[dict],
+    inputs_full,
 ) -> tuple[int, int]:
-    """Heuristic: assume the assistant's content begins immediately after
-    the last `<start_of_turn>model\\n` (or equivalent) sequence and ends
-    at the final eos. This is fragile across template versions — we use
-    a defensive fallback: assume the assistant range is everything after
-    the last image token plus a small offset for the assistant-role
-    preamble. Confirm on first run.
+    """Compute the [a_start, a_end) range over inputs_full.input_ids that
+    corresponds to the assistant turn, by diffing against a separate
+    tokenization that lacks the assistant turn.
+
+    Cleaner than the previous heuristic: robust to chat-template
+    revisions because it asks the template itself where the assistant
+    content begins.
     """
-    # TODO confirm on first run: this is the fragile part. The cleanest
-    # fix is to apply_chat_template separately for [system+user] and the
-    # full [system+user+assistant], then assistant range = tokens that
-    # only appear in the full version.
-    image_ids = (input_ids[0] == processor.tokenizer.convert_tokens_to_ids("<image_soft_token>"))
-    if image_ids.any():
-        last_image = image_ids.nonzero(as_tuple=True)[0][-1].item()
-    else:
-        last_image = 0
-    start = last_image + 1
-    end = input_ids.shape[-1] - last_n_to_skip
-    return start, end
+    ids_full = inputs_full["input_ids"][0]
+    inputs_short = processor.apply_chat_template(
+        messages_without_assistant,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    )
+    ids_short = inputs_short["input_ids"][0].to(ids_full.device)
+    # Longest common prefix
+    prefix = min(ids_full.numel(), ids_short.numel())
+    for i in range(prefix):
+        if ids_full[i].item() != ids_short[i].item():
+            prefix = i
+            break
+    if prefix == 0:
+        raise RuntimeError(
+            "Chat-template diff for assistant-range detection failed: "
+            "no common prefix between [system+user] and [system+user+assistant] "
+            "tokenizations. Inspect the chat_template config."
+        )
+    # Trim trailing eos/end_of_turn if present
+    end = ids_full.numel()
+    eos = processor.tokenizer.eos_token_id
+    while end > prefix and ids_full[end - 1].item() == eos:
+        end -= 1
+    return prefix, end
 
 
 # --------------------------------------------------------------------- #
@@ -349,14 +420,9 @@ def main() -> int:
     n_layers = model.config.text_config.num_hidden_layers
     print(f"[*] model loaded; n_decoder_layers={n_layers}")
 
-    # Image token id — Gemma 3 uses <image_soft_token>; TODO confirm.
-    try:
-        image_token_id = processor.tokenizer.convert_tokens_to_ids("<image_soft_token>")
-    except Exception:
-        raise RuntimeError(
-            "Could not find <image_soft_token> — confirm the actual image-placeholder "
-            "token name in this version of the MedGemma processor."
-        )
+    image_token_id = resolve_image_token_id(model, processor, args.native_grid)
+    print(f"[*] image_token_id resolved to: {image_token_id} "
+          f"({'fallback scan' if image_token_id < 0 else 'lookup'})")
 
     # ---- Load cases --------------------------------------------------
     cases = select_cases(args.reflacx_root, args.mimic_jpg_root, args.n_cases, args.seed)
@@ -368,7 +434,7 @@ def main() -> int:
         try:
             image = Image.open(case["image_path"]).convert("RGB")
             image_hw = (image.size[1], image.size[0])  # (H, W)
-            messages = [
+            messages_user_only = [
                 {"role": "system",
                  "content": [{"type": "text", "text": "You are an expert radiologist."}]},
                 {"role": "user",
@@ -376,12 +442,14 @@ def main() -> int:
                      {"type": "text", "text": "Describe this X-ray"},
                      {"type": "image", "image": image},
                  ]},
+            ]
+            messages_full = messages_user_only + [
                 {"role": "assistant",
                  "content": [{"type": "text", "text": case["transcription"]}]},
             ]
             inputs = processor.apply_chat_template(
-                messages,
-                add_generation_prompt=False,   # we already supply the assistant turn
+                messages_full,
+                add_generation_prompt=False,
                 tokenize=True,
                 return_dict=True,
                 return_tensors="pt",
@@ -390,18 +458,21 @@ def main() -> int:
             with torch.inference_mode():
                 out = model(**inputs, output_attentions=True, return_dict=True)
             attns = out.attentions   # tuple of n_layers tensors
+            if attns is None:
+                raise RuntimeError(
+                    "out.attentions is None — bnb 4-bit may be silently dropping "
+                    "attention weights. Confirm attn_implementation='eager' was set."
+                )
 
             # Image positions
-            img_pos = find_image_token_positions(inputs["input_ids"], image_token_id)
-            if img_pos.numel() != args.native_grid ** 2:
-                print(
-                    f"[WARN] case {ci}: expected {args.native_grid**2} image tokens, "
-                    f"got {img_pos.numel()}; skipping"
-                )
-                continue
+            img_pos = find_image_token_positions(
+                inputs["input_ids"], image_token_id, args.native_grid ** 2,
+            )
 
-            # Assistant range
-            a_start, a_end = detect_assistant_token_range(inputs["input_ids"], processor)
+            # Assistant range — diff between the two tokenizations
+            a_start, a_end = detect_assistant_token_range(
+                processor, messages_user_only, inputs,
+            )
             assistant_ids = inputs["input_ids"][0, a_start:a_end]
             mask = content_token_mask(assistant_ids, processor)
             if mask.sum() == 0:
