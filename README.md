@@ -1,14 +1,10 @@
 # GazeProbe — How Faithful Is Medical-VLM Attention?
 
-![tests](https://github.com/USER/Probe_Research/actions/workflows/test.yml/badge.svg)
+![tests](https://github.com/SYEDFAIZAN1987/Probe_Research/actions/workflows/test.yml/badge.svg)
 
 A cross-model audit of attention–gaze alignment in three released medical
 vision–language models, evaluated against radiologist eye-tracking on
 chest X-rays.
-
-> Badge URL: replace `USER` with the GitHub owner after `gh repo create`.
-> The workflow runs the pure-numpy alignment-metric tests (no GPU, no
-> model loading) on every push.
 
 > **Status:** work in progress. Target venue: ML4H 2026 (NeurIPS workshop)
 > or iMIMIC 2026 (MICCAI workshop). arXiv tech report regardless of
