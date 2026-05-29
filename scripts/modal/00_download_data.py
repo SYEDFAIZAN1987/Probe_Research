@@ -62,6 +62,42 @@ def download_all() -> dict:
     mimic_root.mkdir(parents=True, exist_ok=True)
 
     # ---------------------------------------------------------------- #
+    # Phase 0 — auth probe (fail fast on bad creds / missing DUA)
+    # ---------------------------------------------------------------- #
+    # Wget exit code 8 with --quiet hides the actual HTTP status. We
+    # do a single tiny fetch (--server-response so the headers print)
+    # of the dataset's LICENSE.txt before committing to a recursive
+    # pull. If THIS errors, we surface the real 4xx/5xx code so you
+    # can tell credentials-vs-DUA-vs-404 apart.
+    print("=" * 64)
+    print("Phase 0/3 — auth probe")
+    print("=" * 64)
+    probe_url = "https://physionet.org/files/reflacx-xray-localization/1.0.0/LICENSE.txt"
+    probe_cmd = [
+        "wget", "--server-response", "--tries=1", "--timeout=30",
+        "-O", "/tmp/_probe.txt",
+        *auth, probe_url,
+    ]
+    # Don't echo `pwd` if this prints; redact for the log.
+    redacted = [c if c != pwd else "<REDACTED>" for c in probe_cmd]
+    print(f"  probe: {' '.join(redacted)}")
+    probe = subprocess.run(probe_cmd, capture_output=True, text=True)
+    # wget writes server response headers to stderr
+    head = probe.stderr.splitlines()[-30:] if probe.stderr else []
+    for line in head:
+        print(f"    {line}")
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "Auth probe failed. Most likely cause: REFLACX data-use "
+            "agreement not accepted on your PhysioNet account. Visit "
+            "https://physionet.org/content/reflacx-xray-localization/1.0.0/ "
+            "and accept the DUA at the bottom of the page. Same for "
+            "https://physionet.org/content/mimic-cxr-jpg/2.0.0/ before "
+            "phase 3."
+        )
+    print("  ✓ auth OK")
+
+    # ---------------------------------------------------------------- #
     # Phase 1 — REFLACX recursive fetch
     # ---------------------------------------------------------------- #
     print("=" * 64)
@@ -73,11 +109,11 @@ def download_all() -> dict:
         "--timestamping", "--continue",
         "--no-host-directories", "--cut-dirs=3",
         "--reject", "index.html*,robots.txt",
-        "--quiet", "--show-progress",
         "-P", str(reflacx_root),
         *auth,
         "https://physionet.org/files/reflacx-xray-localization/1.0.0/",
     ]
+    # No --quiet so server errors are visible. Output is moderate.
     subprocess.run(cmd, check=True)
     data_vol.commit()
     print("  ✓ REFLACX download complete")
@@ -120,6 +156,25 @@ def download_all() -> dict:
     print("=" * 64)
     print("Phase 3/3 — MIMIC-CXR-JPG subset")
     print("=" * 64)
+
+    # Phase-3 auth probe: separate DUA from REFLACX's. Fail fast.
+    mimic_probe_url = "https://physionet.org/files/mimic-cxr-jpg/2.0.0/LICENSE.txt"
+    probe = subprocess.run(
+        ["wget", "--server-response", "--tries=1", "--timeout=30",
+         "-O", "/tmp/_mimic_probe.txt", *auth, mimic_probe_url],
+        capture_output=True, text=True,
+    )
+    for line in (probe.stderr.splitlines()[-10:] if probe.stderr else []):
+        print(f"    {line}")
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "MIMIC-CXR-JPG auth probe failed. The REFLACX DUA does NOT "
+            "cover MIMIC-CXR-JPG — they're separate datasets. Visit "
+            "https://physionet.org/content/mimic-cxr-jpg/2.0.0/ and "
+            "accept the data-use agreement, then re-run."
+        )
+    print("  ✓ MIMIC-CXR-JPG auth OK")
+
     base = "https://physionet.org/files/mimic-cxr-jpg/2.0.0/files"
     downloaded = skipped = failed = 0
 
