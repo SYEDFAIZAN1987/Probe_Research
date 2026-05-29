@@ -39,21 +39,31 @@ class MedGemmaExtractor(AttentionExtractor):
 
     # ------------------------------------------------------------------ #
 
-    def load(self, *, quant_config=None, attn_implementation: str = "eager") -> None:
-        from transformers import AutoProcessor, AutoModelForImageTextToText, BitsAndBytesConfig
+    def load(
+        self,
+        *,
+        quant_config=None,
+        dtype=None,
+        attn_implementation: str = "eager",
+    ) -> None:
+        from transformers import AutoProcessor, AutoModelForImageTextToText
 
-        if quant_config is None:
-            quant_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            )
         self.processor = AutoProcessor.from_pretrained(self.model_id)
-        self.model = AutoModelForImageTextToText.from_pretrained(
-            self.model_id,
-            quantization_config=quant_config,
+
+        load_kwargs = dict(
             device_map="auto",
             attn_implementation=attn_implementation,
+        )
+        if quant_config is not None:
+            # Explicit override path — keeps 4-bit available for
+            # opt-in testing on smaller GPUs.
+            load_kwargs["quantization_config"] = quant_config
+        else:
+            # Default per docs/extraction-spec.md §Q6: bf16, no quant.
+            load_kwargs["torch_dtype"] = dtype if dtype is not None else torch.bfloat16
+
+        self.model = AutoModelForImageTextToText.from_pretrained(
+            self.model_id, **load_kwargs,
         )
         self.model.eval()
 

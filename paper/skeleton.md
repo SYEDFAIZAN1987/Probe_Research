@@ -102,10 +102,10 @@ gaze.
 
 ## 3. Setup (≈ 0.75 page)
 
-**3.1 Models.** Released checkpoints, 4-bit (bitsandbytes nf4),
-inference only. Hardware: single A40 48 GB. For each model: what layer
-produces the cross-attention we extract, which token positions in the
-generated report we condition on (per-sentence aggregation).
+**3.1 Models.** Released checkpoints, bf16, inference only. Hardware:
+Modal L40S 48 GB. For each model: what layer produces the
+cross-attention we extract, which token positions in the generated
+report we condition on (per-sentence aggregation).
 
 **3.2 Dataset.** REFLACX 3,032 cases, 5 radiologists. Gaze traces are
 fixation polygons with timestamps; we rasterize to a heatmap at the
@@ -188,9 +188,9 @@ faithfulness).
 - The "right answer for the wrong reason" cases (5.3 + qualitative) —
   alignment is necessary, not sufficient, for trust.
 - Limitations: 2D only; English reports only; one dataset; gaze is a
-  proxy for attention but not for reasoning; 4-bit quantization may
-  change attention distributions vs. fp16 (we test this on a subset and
-  report the delta in the appendix).
+  proxy for attention but not for reasoning. bf16 inference (no
+  quantization) keeps the attention distribution at full numerical
+  fidelity.
 
 ---
 
@@ -209,7 +209,8 @@ faithfulness).
 
 - A. Full per-model attention-extraction details (hooks, layers, code
   pointer).
-- B. 4-bit vs. fp16 attention-distribution delta on a 100-case subset.
+- B. ~~4-bit vs. fp16 attention-distribution delta on a 100-case subset.~~
+  Removed: bf16 is now the only inference precision (no quantization).
 - C. All 13 pathologies' per-model alignment numbers with CIs.
 - D. NLI-hallucination eval setup (model, prompts, thresholds).
 - E. Radiologist-pair alignment statistics, per pathology.
@@ -241,7 +242,8 @@ that emits both?).
 
 ## Open empirical questions deferred to week 2
 
-- 4-bit nf4 vs fp16 attention delta on a 100-case LLaVA-Med subset.
+- ~~4-bit nf4 vs fp16 attention delta on a 100-case LLaVA-Med subset.~~
+  Resolved: no quantization, bf16 throughout.
 - MedGemma layer pilot (which 5 of 32 layers carry the best gaze
   alignment signal).
 - Exact prompt template per model (use model-card default; document

@@ -30,6 +30,19 @@ env/
 Thumbs.db
 desktop.ini
 
+# Credentials, never commit
+Keys.txt
+keys.txt
+*.key
+*.pem
+secrets/
+credentials/
+*_credentials.*
+*credentials*.txt
+
+# Local-only scratch files
+hello_gpu.py
+
 # Project data — never commit
 # Attention caches, gaze rasterizations, per-case metric outputs are
 # regeneratable from cached attention; nothing in data/ goes to git.

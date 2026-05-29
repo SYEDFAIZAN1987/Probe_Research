@@ -95,10 +95,9 @@ with torch.inference_mode():
 decoded = processor.decode(out, skip_special_tokens=True)
 ```
 
-**Quirk.** The card recommends `bfloat16`. With bitsandbytes nf4
-quantization, computation will still be in bf16 (matmul casts up); the
-quantized weights are 4-bit. Confirm on first load that
-`model.config.torch_dtype` is `bfloat16` post-quantization.
+**Loading.** Load in bf16 (no quantization — `torch_dtype=torch.bfloat16`
+on `from_pretrained`). L40S 48 GB has plenty of headroom for a 4 B
+model in bf16 (~8 GB weights + activations).
 
 **Reported headline.** Card reports RadGraph-F1 = 21.9 on MIMIC-CXR
 out-of-the-box; rises to 30.3 after MIMIC fine-tuning. We expect
@@ -175,7 +174,7 @@ separate in the code: `src/inference/prompts.py` owns prompts,
 
 For each model, on the first 10 REFLACX cases:
 
-- [ ] Loads on a 48 GB A40 in 4-bit nf4 without OOM
+- [ ] Loads on a 48 GB L40S in bf16 without OOM
 - [ ] Produces a non-empty report on a known CXR (e.g., a clear pneumonia)
 - [ ] Attention tensor of expected shape comes out of the forward hook
 - [ ] Generation is deterministic across 3 reruns (`do_sample=False`,

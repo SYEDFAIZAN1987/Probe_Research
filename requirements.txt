@@ -9,10 +9,12 @@
 #   * After any torch downgrade/reinstall, verify by actual import
 #     chain:  python -c "from transformers import AutoProcessor"
 #     (just `import torch` is not enough — leaves orphan files).
-#   * bitsandbytes is Linux / WSL only. On native Windows use AWQ or
-#     run inference on RunPod (the planned path).
 #
-# Python: 3.10 or 3.11 (3.12 not yet tested with bitsandbytes nf4).
+# Precision: bf16, no quantization (docs/extraction-spec.md §Q6).
+# bitsandbytes is therefore OPTIONAL — only needed if someone wants
+# to reproduce 4-bit comparisons. Not installed by default.
+#
+# Python: 3.10 or 3.11 recommended.
 
 # --- Core inference -----------------------------------------------------
 torch>=2.4,<3.0
@@ -23,8 +25,10 @@ sentencepiece>=0.2
 protobuf>=4.25
 huggingface_hub>=0.25
 
-# --- Quantization -------------------------------------------------------
-bitsandbytes>=0.43            # Linux / WSL only
+# --- Quantization (optional) -------------------------------------------
+# Default precision is bf16; bitsandbytes is only needed if you want
+# to test 4-bit nf4 inference. Uncomment + pip install if so.
+# bitsandbytes>=0.43          # Linux / WSL only
 # autoawq>=0.2                # uncomment if switching from bnb to AWQ
 
 # --- Image + data -------------------------------------------------------

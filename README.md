@@ -43,11 +43,11 @@ errors.
 
 ## Models audited
 
-| Model | Params | Release | License | Quant |
+| Model | Params | Release | License | Precision |
 |---|---|---|---|---|
-| LLaVA-Med-1.5 | 7B | Microsoft, 2024 | MSR research | 4-bit (bnb) |
-| MedGemma-4B-IT | 4B | Google DeepMind, 2025 | Gemma terms | 4-bit (bnb) |
-| MAIRA-2 | ~7B | Microsoft, 2024 | MSR research | 4-bit (bnb) |
+| LLaVA-Med-1.5 | 7B | Microsoft, 2024 | MSR research | bf16 |
+| MedGemma-4B-IT | 4B | Google DeepMind, 2025 | Gemma terms | bf16 |
+| MAIRA-2 | ~7B | Microsoft, 2024 | MSR research | bf16 |
 
 ## Dataset
 
@@ -79,7 +79,8 @@ Built on top of MIMIC-CXR images.
 | **Total cap** | **~60 hr** | **~$24** | **~$33** |
 
 Hard rules:
-- 4-bit quantization for inference (bitsandbytes / AWQ).
+- bf16 for inference (no quantization). All three models fit
+  comfortably on L40S 48 GB.
 - Attention extraction cached to disk on first pass; never re-run.
 - RunPod community / spot instances; tolerate preemption (resume from
   case-id checkpoint).
@@ -137,8 +138,9 @@ huggingface-cli login                                # MedGemma is gated
 # PhysioNet credentialed dataset — download REFLACX manually after approval
 ```
 
-GPU: single A40 48 GB on RunPod. RTX 4090 24 GB is **not** sufficient
-(LLaVA-Med-1.5 and MAIRA-2 OOM at 4-bit + long context). 
+GPU: Modal L40S 48 GB (per-second billing) or AMD MI300X 192 GB if the
+free-credits application is approved. RTX 4090 24 GB is **not**
+sufficient in bf16 — LLaVA-Med-1.5 and MAIRA-2 OOM with long context.
 
 ## Phase 2 (future thesis pitch, not in this 8-week scope)
 

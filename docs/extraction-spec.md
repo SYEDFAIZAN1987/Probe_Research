@@ -13,6 +13,7 @@ implementation; revisit only with explicit reason.
 | 3 | Gaze rasterization grid? | Both: model-native grid AND a common 56×56 cross-model grid. Bilinear upsampling; gaze rasterized via Gaussian KDE with σ from the REFLACX reference protocol. |
 | 4 | RadGraph version? | **RadGraph-XL** (Delbrouck et al., ACL Findings 2024) — matches Look & Mark for comparability, avoids CheXpert-F1's expert-correlation issues. |
 | 5 | Hallucination metric? | **RaTEScore + RadGraph-XL** as primary metrics. Skip RadNLI (not used by closest baseline). Skip human eval (out of scope). Report CheXbert-F1 as a secondary number for older-literature comparability with a footnoted caveat. |
+| 6 | Compute precision? | **bf16 on L40S 48 GB (or larger)**. No bitsandbytes 4-bit. All three models fit comfortably: LLaVA-Med 7B ≈ 14 GB, MedGemma 4B ≈ 8 GB, MAIRA-2 7B ≈ 14 GB. Decided 2026-05-28 after Modal smoke test confirmed L40S availability. |
 
 Plus one bonus decision driven by the MAIRA-2 architecture:
 
@@ -46,12 +47,12 @@ on natural images, not CXRs, (b) using a single head conflates "what we
 extract" with "what we tune the extraction to," which weakens the
 faithfulness claim. Layer-mean is more conservative and reproducible.
 
-**Implementation.** Use `transformers` model with
-`output_attentions=True` plus a forward-hook fallback for any model
-that lazy-prunes attention outputs in 4-bit mode. Extract attention
-matrices of shape `[heads, query_tokens, key_tokens]`, slice to
-`query=text_tokens, key=image_tokens`. See `src/attn/` (to be
-implemented week 2).
+**Implementation.** Use `transformers` model loaded in **bf16** with
+`attn_implementation="eager"` and `output_attentions=True`. The SDPA
+backend silently drops attention weights — "eager" is the required
+workaround regardless of precision. Extract attention matrices of
+shape `[heads, query_tokens, key_tokens]`, slice to
+`query=text_tokens, key=image_tokens`. See `src/attn/`.
 
 **Open pilot for week 2.** For MedGemma specifically: run extraction on
 50 REFLACX cases at *every* layer (1–32), compute alignment-with-gaze
@@ -198,12 +199,11 @@ metrics as for attention.
 
 ## What this spec does NOT decide
 
-- **4-bit vs. fp16 attention delta.** Open empirical question — does
-  bitsandbytes nf4 quantization shift the attention distribution enough
-  to invalidate the audit? Plan: run 100 cases of LLaVA-Med in both
-  precisions in week 2; report the delta as an appendix table. If
-  the delta is large, repeat the full pass in fp16 (budget allows
-  if needed).
+- ~~**4-bit vs. fp16 attention delta.**~~ **Resolved 2026-05-28** by
+  decision Q6 above: we run in bf16 on L40S 48 GB. The previous concern
+  (does nf4 corrupt the attention distribution) is moot when no
+  quantization is used. The bf16 vs fp32 delta is a known small effect
+  in the saliency-literature noise floor and we accept it.
 - **Exact prompt template per model.** Week 1 work; each model has a
   preferred CXR-report prompt format from its model card / paper. Use
   the model-card prompt verbatim, document in `docs/prompts.md`.

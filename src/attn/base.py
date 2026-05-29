@@ -116,12 +116,21 @@ class AttentionExtractor(ABC):
     # ------------------------------------------------------------------ #
 
     @abstractmethod
-    def load(self, *, quant_config=None, attn_implementation: str = "eager") -> None:
+    def load(
+        self,
+        *,
+        quant_config=None,
+        dtype=None,
+        attn_implementation: str = "eager",
+    ) -> None:
         """Load self.model and self.processor.
 
-        Subclasses must set attn_implementation='eager' (or equivalent)
-        so output_attentions actually materializes — the SDPA backend
-        silently drops attention weights under 4-bit quantization.
+        Defaults per docs/extraction-spec.md §Q6: bf16, no quantization.
+        Subclasses pass `torch_dtype=torch.bfloat16` when `quant_config`
+        is None and `dtype` is None.
+
+        attn_implementation must be 'eager' so output_attentions
+        materializes — the SDPA backend silently drops attention weights.
         """
         ...
 
