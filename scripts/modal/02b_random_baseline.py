@@ -72,6 +72,8 @@ def compute_random_baseline(
     n_cases: int = 50,
     n_random_samples: int = 100,
     seed: int = 0,
+    grid_edge: int = 16,
+    model_name: str = "medgemma",
 ) -> dict:
     """Compute random-attention baseline distributions for the same
     cases the layer pilot used (same seed = same cases)."""
@@ -99,7 +101,8 @@ def compute_random_baseline(
     # doesn't change which cases get picked.
     attn_rng = np.random.default_rng(seed + 1)
 
-    G = 16  # MedGemma native grid
+    G = grid_edge
+    print(f"[*] grid edge = {G}x{G} = {G*G} cells")
     rows = []
     skipped = 0
     failed = 0
@@ -162,7 +165,7 @@ def compute_random_baseline(
         )
 
     df = pd.DataFrame(rows)
-    out_dir = Path("/data/pilot/medgemma")
+    out_dir = Path(f"/data/pilot/{model_name}")
     out_dir.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out_dir / "random_baseline.parquet", index=False)
     print(f"\n[OK] wrote {out_dir / 'random_baseline.parquet'} "
@@ -253,13 +256,22 @@ def compute_random_baseline(
 # ----------------------------------------------------------------------- #
 
 @app.local_entrypoint()
-def main(n_cases: int = 50, n_random_samples: int = 100, seed: int = 0):
+def main(
+    n_cases: int = 50,
+    n_random_samples: int = 100,
+    seed: int = 0,
+    grid_edge: int = 16,
+    model_name: str = "medgemma",
+):
     print(f"[local] launching random-baseline computation: "
-          f"n_cases={n_cases}, n_random_samples={n_random_samples}")
+          f"n_cases={n_cases}, n_random_samples={n_random_samples}, "
+          f"grid_edge={grid_edge}, model_name={model_name}")
     result = compute_random_baseline.remote(
         n_cases=n_cases,
         n_random_samples=n_random_samples,
         seed=seed,
+        grid_edge=grid_edge,
+        model_name=model_name,
     )
     print("\n[local] result:")
     print(json.dumps(result, indent=2))
