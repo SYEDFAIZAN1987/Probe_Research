@@ -11,12 +11,17 @@ Run prerequisites (one-time, do these on the Kaggle web UI):
      https://www.kaggle.com/competitions/vinbigdata-chest-xray-abnormalities-detection/rules
      (one click on "I Understand and Accept").
   3. Generate an API token at https://www.kaggle.com/settings/account
-     → click "Create New Token" → downloads `kaggle.json`.
-  4. Create a Modal Secret named `kaggle-token` from the dashboard
-     with two key-value pairs:
-        KAGGLE_USERNAME = <username from kaggle.json>
-        KAGGLE_KEY      = <key from kaggle.json>
-     The Kaggle CLI reads these as environment variables.
+     → click "Create New API Token". As of 2026, this produces a
+     single opaque token of the form `KGAT_<32 hex chars>`.
+  4. Create a Modal Secret named `kaggle-token` from the dashboard.
+     There are two supported schemes; this script auto-detects which
+     one is in use:
+       (a) New scheme (recommended, current Kaggle UI):
+             KAGGLE_API_TOKEN = KGAT_<32 hex chars>
+       (b) Legacy username/key scheme (older accounts):
+             KAGGLE_USERNAME = <username>
+             KAGGLE_KEY      = <key>
+     If both are set, KAGGLE_API_TOKEN takes priority.
 
 Run:
     modal run scripts/modal/00_download_vindr.py
@@ -55,7 +60,9 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("unzip")
     .pip_install(
-        "kaggle==1.6.17",
+        # Unpinned so we get a recent enough version to handle the
+        # 2026 KAGGLE_API_TOKEN single-token scheme. 1.6.x was too old.
+        "kaggle",
         "pandas==2.2.3",
         "pydicom==2.4.4",
         "pillow==10.4.0",
@@ -109,37 +116,55 @@ def download_all(
     print("=" * 64)
     print("Phase 1/4 — Kaggle auth probe")
     print("=" * 64)
+    api_token = os.environ.get("KAGGLE_API_TOKEN")
     user = os.environ.get("KAGGLE_USERNAME")
     key = os.environ.get("KAGGLE_KEY")
-    if not user or not key:
-        raise RuntimeError(
-            "Modal Secret `kaggle-token` is missing KAGGLE_USERNAME or "
-            "KAGGLE_KEY. Create the Secret from the Modal dashboard "
-            "(Secrets → New → name=kaggle-token, fields=KAGGLE_USERNAME, "
-            "KAGGLE_KEY) and re-run."
-        )
-    print(f"  Kaggle user: {user}")
-    print("  KAGGLE_KEY:  <set, length="
-          f"{len(key)}>")
 
-    # Diagnostic: length of each credential, and presence of whitespace
-    # contamination (a common copy-paste failure mode). We do NOT print
-    # the key itself; lengths are safe to print.
-    print(f"  KAGGLE_USERNAME length: {len(user)}")
-    print(f"  KAGGLE_USERNAME ends with whitespace: {user != user.rstrip()}")
-    print(f"  KAGGLE_KEY length:      {len(key)}  (expected ~32-40)")
-    print(f"  KAGGLE_KEY ends with whitespace:      {key != key.rstrip()}")
-
-    # The kaggle CLI also looks for ~/.kaggle/kaggle.json. Write one as
-    # a belt-and-braces fallback so env-var-only configs that the CLI
-    # version may not respect still work.
     kaggle_dir = Path.home() / ".kaggle"
     kaggle_dir.mkdir(exist_ok=True, parents=True)
-    kaggle_json = kaggle_dir / "kaggle.json"
-    import json as _json
-    kaggle_json.write_text(_json.dumps({"username": user.strip(), "key": key.strip()}))
-    os.chmod(kaggle_json, 0o600)
-    print(f"  wrote {kaggle_json} (mode 600)")
+
+    if api_token:
+        # New 2026 single-token scheme.
+        print(f"  scheme:                 KAGGLE_API_TOKEN (single-token, 2026 format)")
+        print(f"  KAGGLE_API_TOKEN length: {len(api_token)}  (expected ~37, format KGAT_<32hex>)")
+        print(f"  KAGGLE_API_TOKEN ends with whitespace: {api_token != api_token.rstrip()}")
+        print(f"  KAGGLE_API_TOKEN starts with 'KGAT_':   {api_token.startswith('KGAT_')}")
+
+        # Write the access_token file that the new kaggle CLI reads.
+        access_token = kaggle_dir / "access_token"
+        access_token.write_text(api_token.strip())
+        os.chmod(access_token, 0o600)
+        print(f"  wrote {access_token} (mode 600)")
+
+        # Some kaggle CLI versions look at the env var directly; make
+        # sure the (possibly-trimmed) value is exported so the
+        # subprocess inherits it cleanly.
+        os.environ["KAGGLE_API_TOKEN"] = api_token.strip()
+
+    elif user and key:
+        # Legacy username/key scheme.
+        print(f"  scheme:                 KAGGLE_USERNAME + KAGGLE_KEY (legacy format)")
+        print(f"  KAGGLE_USERNAME:        {user}")
+        print(f"  KAGGLE_USERNAME length: {len(user)}")
+        print(f"  KAGGLE_USERNAME ends with whitespace: {user != user.rstrip()}")
+        print(f"  KAGGLE_KEY length:      {len(key)}  (expected ~32-40)")
+        print(f"  KAGGLE_KEY ends with whitespace:      {key != key.rstrip()}")
+
+        kaggle_json = kaggle_dir / "kaggle.json"
+        import json as _json
+        kaggle_json.write_text(_json.dumps({"username": user.strip(), "key": key.strip()}))
+        os.chmod(kaggle_json, 0o600)
+        print(f"  wrote {kaggle_json} (mode 600)")
+
+    else:
+        raise RuntimeError(
+            "Modal Secret `kaggle-token` is missing both schemes:\n"
+            "  EITHER KAGGLE_API_TOKEN (the 2026 single-token format,\n"
+            "          e.g. KGAT_<32 hex chars>),\n"
+            "  OR     KAGGLE_USERNAME + KAGGLE_KEY (legacy).\n"
+            "Edit the Modal Secret to add KAGGLE_API_TOKEN with the\n"
+            "value from Kaggle Account → Create New API Token."
+        )
 
     # `kaggle competitions list` is a cheap auth probe.
     probe = subprocess.run(
@@ -147,10 +172,17 @@ def download_all(
         capture_output=True, text=True,
     )
     if probe.returncode != 0:
-        # Redact the key from any output before showing it — captures the
-        # whole-string occurrence and the URL-encoded form just in case.
+        # Redact every credential value from any output before showing
+        # it — covers both the new single-token and the legacy schemes.
         def _redact(s: str) -> str:
-            for needle in (key, key.strip(), user, user.strip()):
+            needles = []
+            if api_token:
+                needles.extend([api_token, api_token.strip()])
+            if key:
+                needles.extend([key, key.strip()])
+            if user:
+                needles.extend([user, user.strip()])
+            for needle in needles:
                 if needle:
                     s = s.replace(needle, "<REDACTED>")
             return s
