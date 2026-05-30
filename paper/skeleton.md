@@ -237,13 +237,77 @@ is the natural metric.
 Eight case studies: two best-aligned, two worst-aligned, two showing
 inter-model disagreement, two where attention is high but the report
 is wrong (faithfulness without correctness, or correctness without
-faithfulness).
+faithfulness). Each case carries one paragraph of radiologist
+interpretation from Dr. Anuradha, anchoring the automated metrics
+in clinical reasoning.
 
-**Figure 4.** 4×2 grid of overlays.
+**Figure 4.** 4×2 grid of overlays + radiologist commentary.
 
 ---
 
-## 7. Discussion (≈ 0.5 page)
+## 7. Radiologist evaluation (≈ 1.25 pages, new)
+
+Full protocol in [`docs/radiologist-eval-protocol.md`](../docs/radiologist-eval-protocol.md);
+methods section here summarizes.
+
+**7.1 Setup.** Board-certified radiologist (Dr. Anuradha, co-author),
+blinded to model identity, rates a stratified 100-case × 3-model
+subset along a 1–5 Likert clinical-significance scale plus structured
+error counts (missed / hallucinated / misclassified / stylistic).
+Calibration session against 10 shared cases before the main rating
+phase. Plus: pairwise heatmap-preference task on 200 pairs;
+independent bbox re-annotation on 50 cases.
+
+**7.2 Likert distribution.** Per-model histogram of Likert scores
+plus mean ± SD. Identifies which model produces clinically
+acceptable reports most often.
+
+**Figure 5.** Likert distributions × 3 models.
+
+**7.3 Pairwise heatmap preference.** For each (model attention vs.
+VinDr bbox) and (MAIRA-2 emitted bbox vs. VinDr bbox) pair, count
+preferences. Binomial test against 50%.
+
+**Table 5.** Preference rates per pair-type.
+
+**7.4 Failure-mode taxonomy.** Distribution of attention failures
+across the categories defined collaboratively with Dr. Anuradha
+(wrong lung field / correct lobe wrong region / off-anatomy /
+diffuse / anatomically-plausible distractor). Chi-squared across
+models. Identifies which failure mode dominates per model — a
+medically actionable finding.
+
+**Table 6.** Failure-mode counts × 3 models.
+
+**7.5 Independent bbox re-annotation (inter-rater ceiling).** Dr.
+Anuradha's bboxes on a 50-case subset, compared against the VinDr
+consensus. Per-class IoU + κ. The "model attention can't be more
+aligned than another radiologist" sanity bound for §5.4.
+
+**Table 7.** Inter-rater ceiling vs. per-model alignment, per class.
+
+---
+
+## 8. Automated-metric validation (≈ 0.5 page, new)
+
+Spearman correlation between Dr. Anuradha's per-report Likert
+scores and: (a) RadGraph-XL F1, (b) RaTEScore, (c) per-report
+attention-bbox alignment. With 95 % bootstrap CIs.
+
+**Why this matters.** If the attention-bbox alignment score
+correlates strongly with radiologist judgment (Spearman ≥ 0.4 is
+the threshold used in saliency-vs-clinical-relevance papers), we've
+shown that attention faithfulness is *clinically* meaningful, not
+just numerically convenient. If correlation is weak, the paper
+honestly reports that the metric is internally consistent but
+clinically under-specified — also a publishable finding.
+
+**Figure 6.** Three scatter plots (Likert vs. each metric), with
+Spearman ρ + CI on each panel.
+
+---
+
+## 9. Discussion (≈ 0.5 page)
 
 - What the alignment gap means clinically.
 - Why per-pathology variance matters more than the headline number.
@@ -256,7 +320,7 @@ faithfulness).
 
 ---
 
-## 8. Conclusion + future work (≈ 0.25 page)
+## 10. Conclusion + future work (≈ 0.25 page)
 
 - The probe is the contribution. The gap is real, measurable,
   pathology-specific.

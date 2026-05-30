@@ -9,8 +9,12 @@ bounding-box annotations on chest X-rays.
 > **Status:** work in progress.
 > **Primary target venue:** iMIMIC 2026 — the [Interpretability of
 > MachIne intelligence in Medical Image Computing](https://imimic-workshop.com/)
-> workshop at MICCAI 2026. Methodological fit is direct: medical-VLM
-> interpretability is the workshop's stated scope.
+> workshop at MICCAI 2026.
+> **Stretch:** MICCAI 2026 main conference. The stretch became
+> realistic on 2026-05-30 when Dr. Anuradha (board-certified
+> radiologist) joined the project as a co-author with a Tier-3
+> evaluation commitment (clinical-significance grading + failure-mode
+> taxonomy + pairwise preferences + independent bbox re-annotation).
 > **Fallback:** ML4H 2026 (NeurIPS workshop).
 > arXiv tech report posted regardless of workshop outcome.
 >
@@ -86,7 +90,9 @@ pneumothorax, and nodule/mass.
 | 3 | Baselines: random attention, uniform, CLIP-similarity, Grad-CAM | `data/baselines/*.parquet` |
 | 4 | Correlation: per-case alignment vs. RadGraph-XL F1 vs. RaTEScore | `paper/figures/fig_correlation.pdf` |
 | 5 | Attention-pathology map: (model × class) cells where attention is at-or-below random | `paper/tables/tab_pathology.tex` |
-| 6 | Qualitative figure: 8 case studies with best/worst alignment side-by-side | `paper/figures/fig_qualitative.pdf` |
+| 6 | Qualitative figure: 8 case studies with best/worst alignment side-by-side, annotated with radiologist commentary | `paper/figures/fig_qualitative.pdf` |
+| **7** | **Radiologist evaluation** — clinical-significance Likert grading, pairwise preference, failure-mode taxonomy, independent bbox re-annotation. See [`docs/radiologist-eval-protocol.md`](docs/radiologist-eval-protocol.md). | `data/radiologist/*.csv` + `paper/tables/tab_human_eval.tex` |
+| **8** | **Automated-metric validation** — Spearman correlation between radiologist Likert and (RadGraph-XL F1, RaTEScore, attention-bbox IoU) | `paper/figures/fig_metric_validation.pdf` |
 
 **Bonus (MAIRA-2 only):** MAIRA-2's emitted bbox tokens are treated
 as a second grounding signal and audited independently against the
@@ -126,10 +132,10 @@ Hard rules:
 | 2 | Attention extraction wrappers for all 3 models validated on first GPU run; MedGemma layer pilot completed and frozen | layer-pilot recommendation merged into `docs/extraction-spec.md` §Q1 |
 | 3 | Full attention extraction + generation pass on 2,000-case subset × 3 models | `data/attn/` populated |
 | 4 | Alignment + baselines: experiments 2 and 3 | per-finding metrics frozen |
-| 5 | Correlation + attention-pathology map: experiments 4 and 5 | win/loss table frozen |
-| 6 | Qualitative figures + RadGraph-XL + RaTEScore eval | all results frozen |
-| 7 | Draft 6–8 page arXiv tech report | PDF on arXiv |
-| 8 | Polish GitHub repo + HuggingFace Space demo + 1-page summary PDF | application-ready |
+| 5 | Correlation + attention-pathology map: experiments 4 and 5; radiologist-eval protocol signed off + IRB check + Gradio labeling interface live | win/loss table frozen + radiologist rating phase begins |
+| 6 | Qualitative figures + RadGraph-XL + RaTEScore eval; radiologist rating in progress (asynchronous) | all automated results frozen |
+| 7 | Radiologist rating completes; automated-metric validation analysis; draft 6–8 page arXiv tech report with co-author | PDF on arXiv |
+| 8 | Polish GitHub repo + HuggingFace Space demo + 1-page summary PDF; final co-author manuscript review | application-ready |
 
 ## Deliverables
 
@@ -146,10 +152,11 @@ Hard rules:
 .
 ├── README.md           # this file
 ├── docs/
-│   ├── extraction-spec.md      # methodology decisions (frozen)
-│   ├── prompts.md              # per-model prompt templates
-│   ├── vindr-class-synonyms.md # week-1 deliverable
-│   └── subset-sampling.md      # week-1 deliverable
+│   ├── extraction-spec.md             # methodology decisions (frozen)
+│   ├── prompts.md                     # per-model prompt templates
+│   ├── radiologist-eval-protocol.md   # co-author Dr. Anuradha's protocol
+│   ├── vindr-class-synonyms.md        # week-1 deliverable
+│   └── subset-sampling.md             # week-1 deliverable
 ├── paper/
 │   ├── skeleton.md     # outline + section bullets
 │   ├── figures/        # generated figures
