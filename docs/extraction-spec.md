@@ -45,7 +45,7 @@ layer's standalone alignment in the appendix for transparency.
 | Model | LLM | Decoder layers | Default layer set | Why |
 |---|---|---|---|---|
 | LLaVA-Med-1.5 | Vicuna-7B | 32 | **14–18** | Mechanistic interpretability work on LLaVA-1.5-7B identifies localization heads concentrated at L14–18; specifically L14H13 and L14H24 ([arxiv 2503.06287](https://arxiv.org/html/2503.06287), [arxiv 2411.10950](https://arxiv.org/html/2411.10950v1)). |
-| MedGemma-4B | Gemma-3-4B | 32 (h=4096, 32 heads) | **11–22 candidate; pilot to pick best 5** | No published mechanistic study on Gemma yet. Default to a wider mid-band, then run a 50-case pilot in week 2 to pick the best 5 by alignment-with-gaze score. Document the choice and lock it. |
+| MedGemma-4B | Gemma-3-4B | **34** (corrected from earlier prior of 32) | **L0–L4** (frozen 2026-05-30 by 50-case pilot + random-baseline sanity check). | All 5 metrics independently picked L0–L4. AUC 0.685 vs random p95 0.656 → above-random; CC 0.165 vs random p95 0.108 → above-random; NSS 0.95 vs random p95 0.50 → ~2× above-random. IoU 0.045 is at the 76.5th percentile of random — meaningfully above random mean but below the random p95, indicating "broad-but-correct" attention (positively correlated with bbox location, but not tightly peaked). This is *opposite* of the LLaVA-1.5 prior of L14–18; report as a paper bullet. See `data/pilot/medgemma/{layer_window.json,random_summary.md}`. |
 | MAIRA-2 | Vicuna-7B | 32 | **14–18** | LLaVA-family; same prior as LLaVA-Med. RAD-DINO vision encoder doesn't change the LLM-side attention pattern. |
 
 **Why not single-best-head.** Single localization heads (L14H24 etc.)
