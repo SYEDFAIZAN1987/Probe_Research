@@ -122,18 +122,52 @@ def download_all(
     print("  KAGGLE_KEY:  <set, length="
           f"{len(key)}>")
 
+    # Diagnostic: length of each credential, and presence of whitespace
+    # contamination (a common copy-paste failure mode). We do NOT print
+    # the key itself; lengths are safe to print.
+    print(f"  KAGGLE_USERNAME length: {len(user)}")
+    print(f"  KAGGLE_USERNAME ends with whitespace: {user != user.rstrip()}")
+    print(f"  KAGGLE_KEY length:      {len(key)}  (expected ~32-40)")
+    print(f"  KAGGLE_KEY ends with whitespace:      {key != key.rstrip()}")
+
+    # The kaggle CLI also looks for ~/.kaggle/kaggle.json. Write one as
+    # a belt-and-braces fallback so env-var-only configs that the CLI
+    # version may not respect still work.
+    kaggle_dir = Path.home() / ".kaggle"
+    kaggle_dir.mkdir(exist_ok=True, parents=True)
+    kaggle_json = kaggle_dir / "kaggle.json"
+    import json as _json
+    kaggle_json.write_text(_json.dumps({"username": user.strip(), "key": key.strip()}))
+    os.chmod(kaggle_json, 0o600)
+    print(f"  wrote {kaggle_json} (mode 600)")
+
     # `kaggle competitions list` is a cheap auth probe.
     probe = subprocess.run(
         ["kaggle", "competitions", "list", "--page", "1"],
         capture_output=True, text=True,
     )
     if probe.returncode != 0:
-        # Don't print stderr — it may include the API key on auth failures
+        # Redact the key from any output before showing it — captures the
+        # whole-string occurrence and the URL-encoded form just in case.
+        def _redact(s: str) -> str:
+            for needle in (key, key.strip(), user, user.strip()):
+                if needle:
+                    s = s.replace(needle, "<REDACTED>")
+            return s
+        stderr_red = _redact(probe.stderr or "")
+        stdout_red = _redact(probe.stdout or "")
+        print()
+        print("---- stderr (redacted) ----")
+        print(stderr_red[-2000:])
+        print("---- stdout (redacted) ----")
+        print(stdout_red[-2000:])
         raise RuntimeError(
             f"Kaggle auth probe failed (exit {probe.returncode}). "
-            "Common causes: (a) wrong username/key in the Modal Secret, "
-            "(b) Kaggle account not verified by phone, (c) corporate "
-            "firewall blocking kaggle.com."
+            "See the redacted stderr above for the actual cause. "
+            "Common: (a) wrong username/key in Modal Secret "
+            "(check the lengths printed above against the values in "
+            "kaggle.json), (b) Kaggle account not verified by phone, "
+            "(c) corporate firewall blocking kaggle.com."
         )
     print("  ✓ auth OK")
 
