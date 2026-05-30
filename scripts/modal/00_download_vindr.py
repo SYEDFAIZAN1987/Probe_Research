@@ -88,9 +88,11 @@ data_vol = modal.Volume.from_name("gazeprobe-data", create_if_missing=True)
     # The DICOM conversion is now parallelized; ask for real cores
     # so we actually get parallelism. Modal default is 0.125 CPU.
     cpu=8.0,
-    # Local /tmp + /data fill up during unzip + PNG output; give the
-    # container enough scratch.
-    ephemeral_disk=300 * 1024,  # 300 GB
+    # NOTE: deliberately NOT setting ephemeral_disk. Modal's minimum
+    # ephemeral request is 512 GiB which we don't need — all the
+    # actual data (zip, DICOMs, PNGs) lives on the `gazeprobe-data`
+    # Volume mounted at /data, which has its own (larger) quota.
+    # Only /tmp scratch uses ephemeral; default is enough.
 )
 def download_all(
     competition: str = "vinbigdata-chest-xray-abnormalities-detection",
