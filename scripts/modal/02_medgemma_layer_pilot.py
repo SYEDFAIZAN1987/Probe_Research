@@ -76,6 +76,7 @@ image = (
         "matplotlib",
         "nltk",
         "tqdm",
+        "tabulate",  # for per_layer.to_markdown() in the recommendation file
     )
     # Make our project src/ importable inside the container.
     .add_local_python_source("src")
