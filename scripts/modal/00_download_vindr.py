@@ -240,22 +240,77 @@ def download_all(
     print("=" * 64)
     print(f"Phase 3/4 — download + unzip ({competition})")
     print("=" * 64)
-    if not (target / "train").exists() or not list(target.glob("train/*.dicom")):
-        zip_path = target / f"{competition}.zip"
-        subprocess.run(
-            ["kaggle", "competitions", "download", "-c", competition,
-             "-p", str(target)],
-            check=True,
-        )
-        print(f"  downloaded → {zip_path}")
-        subprocess.run(
-            ["unzip", "-o", "-q", str(zip_path), "-d", str(target)],
-            check=True,
-        )
-        zip_path.unlink()
-        print(f"  unzipped → {target}")
+    # Determine expected DICOM count from train.csv. We use this as
+    # the source of truth: if it lists 15,000 unique image_ids and
+    # the disk has 5,117 DICOMs, the previous unzip was interrupted
+    # and the disk is stale. Earlier resume relied on "is train/
+    # non-empty?" which mis-treats partial unzips as complete.
+    expected_count = 0
+    train_csv = target / "train.csv"
+    if train_csv.exists():
+        import pandas as _pd
+        try:
+            _df = _pd.read_csv(train_csv)
+            id_col = "image_id" if "image_id" in _df.columns else _df.columns[0]
+            expected_count = _df[id_col].nunique()
+            print(f"  train.csv lists {expected_count} unique {id_col} values")
+        except Exception as e:
+            print(f"  [WARN] could not read train.csv ({e}); falling back to non-empty check")
+
+    actual_count = (
+        len(list((target / "train").glob("*.dicom")))
+        if (target / "train").exists() else 0
+    )
+    print(f"  actual DICOM count on volume: {actual_count}")
+
+    zip_path = target / f"{competition}.zip"
+    needs_work = (expected_count > 0 and actual_count < expected_count) \
+                 or (expected_count == 0 and actual_count == 0)
+
+    if not needs_work:
+        print(f"  ✓ {actual_count} DICOMs present (>= expected {expected_count}); "
+              f"skipping download")
     else:
-        print(f"  ✓ {target}/train already populated; skipping download")
+        if expected_count > 0:
+            print(f"  short by {expected_count - actual_count} DICOMs; "
+                  f"need (re-)extract")
+
+        # Re-download only if the zip doesn't already exist on the volume
+        if zip_path.exists():
+            zip_size_gb = zip_path.stat().st_size / 1e9
+            print(f"  zip already on volume at {zip_path} ({zip_size_gb:.1f} GB); "
+                  f"skipping kaggle download")
+        else:
+            print(f"  zip not present; downloading from Kaggle…")
+            subprocess.run(
+                ["kaggle", "competitions", "download", "-c", competition,
+                 "-p", str(target)],
+                check=True,
+            )
+            print(f"  downloaded → {zip_path}")
+
+        # Unzip with -o (overwrite) so a partial previous extract gets
+        # completed without manual cleanup. Drop -q so progress is
+        # visible if we ever need to debug a slow extract.
+        print(f"  unzipping → {target}")
+        subprocess.run(
+            ["unzip", "-o", str(zip_path), "-d", str(target)],
+            check=True,
+        )
+
+        # Verify count BEFORE deleting the zip. Only delete on a
+        # confirmed full extract.
+        new_count = len(list((target / "train").glob("*.dicom")))
+        print(f"  post-unzip DICOM count: {new_count}")
+        if expected_count > 0 and new_count >= expected_count:
+            zip_path.unlink(missing_ok=True)
+            print(f"  ✓ all DICOMs present; removed zip to save volume space")
+        else:
+            print(f"  [WARN] post-unzip count ({new_count}) < expected "
+                  f"({expected_count}); keeping zip for next resume")
+
+        # Commit so a Phase-4 crash doesn't lose the unzipped DICOMs
+        data_vol.commit()
 
     if not keep_test_split and (target / "test").exists():
         # Free volume space — we never use the unannotated test split
