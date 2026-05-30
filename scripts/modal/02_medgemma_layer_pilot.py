@@ -124,7 +124,7 @@ def run_pilot(n_cases: int = 50, seed: int = 0) -> dict:
         nltk.download("stopwords", quiet=True)
 
     from src.attn.extract_medgemma import MedGemmaExtractor
-    from src.metrics.alignment import kl_div
+    from src.metrics.alignment import auc_attn_gaze, cc, iou_topk, kl_div, nss
     from src.metrics.rasterize import rasterize_bbox_to_grid
 
     rng = np.random.default_rng(seed)
@@ -178,6 +178,23 @@ def run_pilot(n_cases: int = 50, seed: int = 0) -> dict:
     print(f"[*] smoke forward OK: {len(smoke_result.attentions)} layers, "
           f"img_pos count = {smoke_result.image_token_positions.numel()}")
 
+    # Diagnostic: per-layer attention tensor shapes. Anything that
+    # doesn't have the canonical (1, heads, seq, seq) LLM decoder shape
+    # is probably a vision-encoder or cross-attention tensor leaking
+    # into the .attentions tuple, and should be excluded from layer
+    # selection. This will surface if the "34 vs 32 layer" surprise
+    # repeats.
+    print("[*] per-layer attention shapes (first 5 and last 5):")
+    for li, a in list(enumerate(smoke_result.attentions))[:5]:
+        print(f"    L{li:2d}: {tuple(a.shape)}")
+    if len(smoke_result.attentions) > 10:
+        print("    ...")
+        for li, a in list(enumerate(smoke_result.attentions))[-5:]:
+            print(f"    L{li:2d}: {tuple(a.shape)}")
+    # Record the canonical decoder shape for filtering below.
+    decoder_shape_signature = tuple(smoke_result.attentions[len(smoke_result.attentions)//2].shape[-2:])
+    print(f"[*] presumed decoder shape signature: q×k = {decoder_shape_signature}")
+
     # ------------------------------------------------------------------ #
     # Phase 3 — Per-case extraction
     # ------------------------------------------------------------------ #
@@ -205,11 +222,13 @@ def run_pilot(n_cases: int = 50, seed: int = 0) -> dict:
             same_class = case_rows[case_rows["class_name"] == class_name]
             bboxes = same_class[["x_min", "y_min", "x_max", "y_max"]].values.tolist()
 
-            bbox_mask = rasterize_bbox_to_grid(
-                bboxes,
-                image_hw=image_hw,
-                grid_edge=extractor.native_grid[0],
-                as_probability=True,
+            bbox_prob = rasterize_bbox_to_grid(
+                bboxes, image_hw=image_hw,
+                grid_edge=extractor.native_grid[0], as_probability=True,
+            )
+            bbox_binary = rasterize_bbox_to_grid(
+                bboxes, image_hw=image_hw,
+                grid_edge=extractor.native_grid[0], as_probability=False,
             )
 
             # Teacher-force the model with a canonical template that
@@ -230,20 +249,32 @@ def run_pilot(n_cases: int = 50, seed: int = 0) -> dict:
 
             G = extractor.native_grid[0]
             for layer_idx, attn in enumerate(result.attentions):
+                # Filter to only "real" LLM-decoder-shaped tensors. Anything
+                # whose (q, k) dimensions don't match the canonical
+                # signature is excluded from layer selection.
+                shape_sig = tuple(attn.shape[-2:])
+                if shape_sig != decoder_shape_signature:
+                    continue
                 a = attn[0].mean(dim=0)                          # (q, k)
                 a = a[a_start:a_end][content_mask][:, img_pos]   # (n_content, n_img)
                 if a.numel() == 0:
                     continue
                 a = a.float().mean(dim=0).cpu().numpy()          # (n_img,)
                 a_grid = a.reshape(G, G)
-                a_grid = a_grid / (a_grid.sum() + 1e-12)
-                kl = kl_div(a_grid, bbox_mask)
+                a_grid_norm = a_grid / (a_grid.sum() + 1e-12)
+
+                # Compute all five alignment metrics per (case, layer).
+                # IoU is the primary metric for BBoxProbe (spec §3.3).
                 rows.append({
                     "case_idx": ci,
                     "image_id": str(image_id),
                     "class_name": class_name,
                     "layer": layer_idx,
-                    "kl": float(kl),
+                    "kl":   float(kl_div(a_grid_norm, bbox_prob)),
+                    "iou":  float(iou_topk(a_grid_norm, bbox_binary > 0, k_frac=0.2)),
+                    "auc":  float(auc_attn_gaze(a_grid_norm, bbox_prob, threshold_q=0.5)),
+                    "cc":   float(cc(a_grid_norm, bbox_prob)),
+                    "nss":  float(nss(a_grid_norm, bbox_prob)),
                 })
 
             if (ci + 1) % 5 == 0:
@@ -271,66 +302,89 @@ def run_pilot(n_cases: int = 50, seed: int = 0) -> dict:
     df.to_parquet(out_dir / "layer_kl.parquet", index=False)
     print(f"[OK] wrote {out_dir / 'layer_kl.parquet'}")
 
-    mean_per_layer = df.groupby("layer")["kl"].mean().sort_index()
-    rolling = mean_per_layer.rolling(window=5, center=False).mean()
-    best_end = int(rolling.idxmin())
+    # Per-layer means for every metric.
+    metric_cols = ["kl", "iou", "auc", "cc", "nss"]
+    per_layer = df.groupby("layer")[metric_cols].mean().sort_index()
+
+    # IoU is the PRIMARY layer-selection criterion per docs/extraction-
+    # spec.md §3.3 (bbox is naturally a region, IoU is the natural
+    # metric). Higher = better. Use rolling-window mean to pick a
+    # contiguous-5 block.
+    iou_rolling = per_layer["iou"].rolling(window=5, center=False).mean()
+    best_end = int(iou_rolling.idxmax())
     best_start = best_end - 4
     best_window = list(range(best_start, best_end + 1))
-    min_kl = float(rolling.min())
+    best_iou = float(iou_rolling.max())
 
-    print(f"\n[REC] best contiguous-5 layer window: "
-          f"L{best_start}-L{best_end} (mean KL = {min_kl:.4f})")
-    print("\nMean KL per layer:")
-    for layer, kl in mean_per_layer.items():
-        marker = "  ← in window" if layer in best_window else ""
-        print(f"  L{layer:2d}: {kl:.4f}{marker}")
+    # Also compute what the OTHER metrics would have picked, for sanity
+    kl_rolling  = per_layer["kl"].rolling(5).mean()
+    auc_rolling = per_layer["auc"].rolling(5).mean()
+    cc_rolling  = per_layer["cc"].rolling(5).mean()
+
+    print(f"\n[REC] best contiguous-5 layer window by IoU (primary): "
+          f"L{best_start}-L{best_end} (mean IoU = {best_iou:.4f})")
+    print(f"  (KL  would pick window ending at L{int(kl_rolling.idxmin()) if kl_rolling.notna().any() else '?'})")
+    print(f"  (AUC would pick window ending at L{int(auc_rolling.idxmax()) if auc_rolling.notna().any() else '?'})")
+    print(f"  (CC  would pick window ending at L{int(cc_rolling.idxmax()) if cc_rolling.notna().any() else '?'})")
+
+    print("\nPer-layer metric means:")
+    print(per_layer.to_string(float_format="%.4f"))
 
     # JSON sidecar read by MedGemmaExtractor.default_layers()
     window_path = out_dir / "layer_window.json"
     window_path.write_text(json.dumps({
         "model": extractor.model_id,
         "layers": best_window,
-        "mean_kl": min_kl,
+        "selection_metric": "iou",  # primary metric per spec §3.3
+        "mean_iou_in_window": best_iou,
         "n_cases": int(df["case_idx"].nunique()),
-        "all_mean_kl_per_layer": {int(k): float(v) for k, v in mean_per_layer.items()},
+        "per_layer": {
+            str(int(layer)): {m: float(per_layer.loc[layer, m]) for m in metric_cols}
+            for layer in per_layer.index
+        },
     }, indent=2))
     print(f"[OK] wrote {window_path}")
 
     # Human-readable recommendation file
     rec_path = out_dir / "recommendation.md"
+    table = per_layer.to_markdown(floatfmt=".4f")
     rec_path.write_text(
         f"# MedGemma layer-pilot recommendation (BBoxProbe v1)\n\n"
-        f"Best contiguous-5 layer window by mean KL(attn || bbox) on "
+        f"Primary metric: **IoU** (top-20% attention vs. bbox mask), "
+        f"per docs/extraction-spec.md §3.3.\n\n"
+        f"Best contiguous-5 layer window by mean IoU on "
         f"{df['case_idx'].nunique()} VinDr-CXR cases:\n\n"
-        f"**L{best_start}-L{best_end}** (mean KL = {min_kl:.4f})\n\n"
-        f"Lock this into `docs/extraction-spec.md` §Q1 (MedGemma row), "
-        f"replacing the 'L11-22 candidate; pilot to pick best 5' "
-        f"placeholder.\n\n"
-        f"## Mean KL per layer\n\n"
-        + "".join(f"- L{layer:2d}: {kl:.4f}"
-                 + ("  *(in chosen window)*" if layer in best_window else "")
-                 + "\n"
-                 for layer, kl in mean_per_layer.items())
+        f"**L{best_start}-L{best_end}** (mean IoU = {best_iou:.4f})\n\n"
+        f"## All metrics per layer\n\n{table}\n\n"
+        f"## Lock-in step\n\n"
+        f"Replace the 'L11-22 candidate; pilot to pick best 5' line in "
+        f"`docs/extraction-spec.md` §Q1 (MedGemma row) with:\n\n"
+        f"> **L{best_start}-L{best_end}** (frozen 2026-MM-DD by 50-case pilot, "
+        f"mean IoU = {best_iou:.4f}). See `data/pilot/medgemma/layer_window.json`.\n"
     )
     print(f"[OK] wrote {rec_path}")
 
-    # Layer-scan plot (best-effort)
+    # Layer-scan plot (best-effort) — five metrics in a 2x3 grid
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(9, 4))
-        ax.plot(mean_per_layer.index, mean_per_layer.values, marker="o")
-        ax.axvspan(best_start - 0.5, best_end + 0.5, color="tab:green",
-                   alpha=0.2, label=f"recommended L{best_start}-L{best_end}")
-        ax.set_xlabel("decoder layer")
-        ax.set_ylabel("mean KL(attn || bbox)")
-        ax.set_title("MedGemma layer scan vs VinDr-CXR bbox alignment")
-        ax.legend()
+        fig, axes = plt.subplots(2, 3, figsize=(15, 7))
+        for ax, m in zip(axes.flatten(), metric_cols):
+            ax.plot(per_layer.index, per_layer[m], marker="o")
+            ax.axvspan(best_start - 0.5, best_end + 0.5, color="tab:green",
+                       alpha=0.2, label=f"chosen L{best_start}-L{best_end}")
+            ax.set_xlabel("decoder layer")
+            ax.set_ylabel(f"mean {m}")
+            ax.set_title(m.upper() + (" (PRIMARY)" if m == "iou" else ""))
+            ax.legend(fontsize=8)
+        axes.flatten()[-1].axis("off")  # hide unused 6th subplot
+        fig.suptitle("MedGemma layer scan vs VinDr-CXR bbox alignment "
+                     "(50 cases)", fontsize=12)
         fig.tight_layout()
-        fig.savefig(out_dir / "layer_kl_scan.png", dpi=120)
+        fig.savefig(out_dir / "layer_scan.png", dpi=120)
         plt.close(fig)
-        print(f"[OK] wrote {out_dir / 'layer_kl_scan.png'}")
+        print(f"[OK] wrote {out_dir / 'layer_scan.png'}")
     except Exception as e:
         print(f"[WARN] plot failed: {e}")
 
@@ -340,10 +394,15 @@ def run_pilot(n_cases: int = 50, seed: int = 0) -> dict:
         "n_cases_used": int(df["case_idx"].nunique()),
         "skipped": int(skipped),
         "failed": int(failed),
-        "n_layers_scanned": int(n_layers),
+        "n_layers_scanned": int(per_layer.shape[0]),
+        "selection_metric": "iou",
         "best_window": best_window,
-        "mean_kl_in_window": min_kl,
-        "mean_kl_per_layer": {int(k): float(v) for k, v in mean_per_layer.items()},
+        "mean_iou_in_window": best_iou,
+        "per_layer": {
+            str(int(layer)): {m: round(float(per_layer.loc[layer, m]), 4)
+                              for m in metric_cols}
+            for layer in per_layer.index
+        },
     }
 
 
