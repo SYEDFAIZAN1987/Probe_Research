@@ -125,33 +125,31 @@ class LLaVAMedExtractor(AttentionExtractor):
         image: "Image",
         ground_truth_report: str,
     ) -> TeacherForcedInputs:
-        """Build inputs using the chat-template + processor two-step,
-        matching the chaoyinshe model card recipe verbatim.
+        """Build inputs by manually constructing the mistral_instruct
+        prompt (the chaoyinshe tokenizer doesn't ship a chat_template,
+        so apply_chat_template raises; we hardcode the template that
+        the original LLaVA codebase uses).
 
-        Note: image-token expansion handling is NOT done here — the
-        prep object holds pre-expansion coords. The post-expansion
-        bookkeeping happens in the overridden extract_teacher_forced.
+        Mistral-instruct format with <image> placeholder:
+            [INST] <image>\\n{user_text} [/INST] {assistant_text}
+
+        BOS (<s>) gets auto-prepended by the tokenizer; EOS (</s>) is
+        appended manually for the full prompt so the model sees a
+        terminated assistant turn during teacher-forced extraction.
+
+        Image expansion is NOT done here — prep stores pre-expansion
+        coords; extract_teacher_forced does the post-expansion math.
         """
-        messages_user_only = [
-            {"role": "user", "content": [
-                {"type": "image"},
-                {"type": "text",
-                 "text": "Describe this chest radiograph. Cover the "
-                         "lungs, pleura, heart and mediastinum, and bones / "
-                         "soft tissues. Do not produce an impression."},
-            ]},
-        ]
-        messages_full = messages_user_only + [
-            {"role": "assistant",
-             "content": [{"type": "text", "text": ground_truth_report}]},
-        ]
-
-        prompt_user = self.processor.tokenizer.apply_chat_template(
-            messages_user_only, tokenize=False, add_generation_prompt=True,
+        user_text = (
+            "Describe this chest radiograph. Cover the lungs, pleura, "
+            "heart and mediastinum, and bones / soft tissues. Do not "
+            "produce an impression."
         )
-        prompt_full = self.processor.tokenizer.apply_chat_template(
-            messages_full, tokenize=False, add_generation_prompt=False,
-        )
+        # Manual mistral_instruct. Note no leading <s> — the tokenizer
+        # adds BOS by default.
+        prompt_user = f"[INST] <image>\n{user_text} [/INST]"
+        eos = self.processor.tokenizer.eos_token or "</s>"
+        prompt_full = f"{prompt_user} {ground_truth_report}{eos}"
 
         inputs_user = self.processor(
             images=[image], text=prompt_user, return_tensors="pt",
