@@ -101,7 +101,8 @@ model in bf16 (~8 GB weights + activations).
 
 **Reported headline.** Card reports RadGraph-F1 = 21.9 on MIMIC-CXR
 out-of-the-box; rises to 30.3 after MIMIC fine-tuning. We expect
-similar or slightly lower numbers on REFLACX (different distribution).
+similar or slightly lower numbers on VinDr-CXR (Vietnamese-cohort
+distribution shift).
 
 ---
 
@@ -140,15 +141,15 @@ prediction = processor.convert_output_to_plaintext_or_grounded_sequence(decoded)
 1. **`get_grounding=True` is required** for the second-grounding-signal
    experiment (see [`extraction-spec.md`](extraction-spec.md) §Q0).
    Without it, MAIRA-2 outputs plain text and we lose the bbox channel.
-2. **REFLACX has only frontal views** — pass `current_lateral=None`
+2. **VinDr-CXR has only frontal views** — pass `current_lateral=None`
    and verify the processor handles it. If a lateral is silently
    required, this is a week-1 blocker for MAIRA-2 specifically.
 3. **Indication / technique / comparison fields** are part of MAIRA-2's
-   input schema. REFLACX provides reports but not all of these as
-   structured fields. Decision: pass empty strings to all three;
-   document this as a deviation from MAIRA-2's intended use. This may
-   suppress some MAIRA-2 outputs vs. its training distribution —
-   acknowledge in the limitations section.
+   input schema. VinDr-CXR provides only bbox annotations + class
+   labels, not structured clinical-context fields. Decision: pass
+   empty strings to all three; document this as a deviation from
+   MAIRA-2's intended use. This may suppress some MAIRA-2 outputs vs.
+   its training distribution — acknowledge in the limitations section.
 4. **No system prompt or chat template.** The processor handles
    formatting end-to-end. Do not attempt to inject a system prompt.
 
@@ -157,7 +158,8 @@ returns a list of `(text, bboxes_or_None)` tuples — bbox is
 `(x1, y1, x2, y2)` relative to the **cropped image**, NOT the original.
 Day-1 task: write a `bbox_to_native_coords()` helper that takes the
 processor's crop metadata and unprojects back to native image
-coordinates so they're directly comparable to REFLACX bboxes.
+coordinates so they're directly comparable to VinDr-CXR radiologist
+bboxes (which are in original-image pixel coordinates).
 
 ---
 
@@ -172,12 +174,15 @@ separate in the code: `src/inference/prompts.py` owns prompts,
 
 ## Day-1 validation checklist
 
-For each model, on the first 10 REFLACX cases:
+For each model, on the first 10 VinDr-CXR cases:
 
 - [ ] Loads on a 48 GB L40S in bf16 without OOM
-- [ ] Produces a non-empty report on a known CXR (e.g., a clear pneumonia)
+- [ ] Produces a non-empty report on a known CXR (e.g., a clear pneumonia
+      or pleural effusion case from VinDr)
 - [ ] Attention tensor of expected shape comes out of the forward hook
 - [ ] Generation is deterministic across 3 reruns (`do_sample=False`,
       fixed seed)
 - [ ] For MAIRA-2 specifically: at least one bbox token appears in the
       output of a positive-finding case
+- [ ] DICOM→PNG conversion artifacts (if any) don't visibly degrade
+      report quality vs. native DICOM input (check on 1-2 cases manually)

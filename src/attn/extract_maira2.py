@@ -26,11 +26,12 @@ inline):
   4. Whether the gold-report-tokens-appended teacher-forcing approach
      produces sensible attention. MAIRA-2 was trained to PRODUCE
      grounded reports with bbox tokens; teacher-forcing with the
-     un-bbox-annotated REFLACX dictation is methodologically different
+     un-bbox-annotated VinDr-CXR dictation is methodologically different
      from training. Acknowledge in the paper.
 
-REFLACX-specific note: REFLACX provides only frontal views, no
-structured indication / technique / comparison / prior fields.
+VinDr-CXR-specific note: VinDr-CXR (Kaggle release) provides only
+frontal views, no structured indication / technique / comparison /
+prior fields, and no reference dictation reports.
 We pass empty strings for those — a known deviation from MAIRA-2's
 intended use, called out in §7 of the paper skeleton.
 
@@ -174,7 +175,7 @@ class MAIRA2Extractor(AttentionExtractor):
 
           1. Call `format_and_preprocess_reporting_input` with empty
              clinical-context fields and `get_grounding=False` (because
-             REFLACX gold reports don't have bbox tokens).
+             VinDr-CXR gold reports don't have bbox tokens).
           2. Tokenize the gold report separately, append to input_ids,
              extend attention_mask. Image embeddings carry through
              because they're keyed to input positions in the prompt.

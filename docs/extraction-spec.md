@@ -1,17 +1,24 @@
-# Attention-extraction spec
+# Attention-extraction spec — BBoxProbe v1
 
-Resolves the five open methodology questions flagged in
+Resolves the open methodology questions flagged in
 [`paper/skeleton.md`](../paper/skeleton.md). Frozen for week 2
 implementation; revisit only with explicit reason.
+
+**Pivot note (2026-05-29):** this project pivoted from GazeProbe v2
+(REFLACX gaze) to BBoxProbe v1 (VinDr-CXR bbox) to escape the
+PhysioNet credentialing wait. The gaze-version spec is preserved
+at git tag `gaze-v0.1`. The methodology decisions below were
+updated where the ground-truth signal change required it; the rest
+carry over verbatim.
 
 ## Summary
 
 | # | Question | Decision |
 |---|---|---|
 | 1 | Which attention to extract, from which layer? | Text→image self-attention from LLM decoder layers, mid-third (LLaVA-Med L14–18, MedGemma L11–22, MAIRA-2 L14–18). Mean across heads. Default = "layer mean of best 5 layers"; calibrate per model on a 50-case pilot in week 2. |
-| 2 | Per-sentence aggregation? | Mean over content tokens of the sentence (drop punctuation and stopwords). Sanity-check against "finding-noun tokens only" on a 100-case subset, report delta in appendix. |
-| 3 | Gaze rasterization grid? | Both: model-native grid AND a common 56×56 cross-model grid. Bilinear upsampling; gaze rasterized via Gaussian KDE with σ from the REFLACX reference protocol. |
-| 4 | RadGraph version? | **RadGraph-XL** (Delbrouck et al., ACL Findings 2024) — matches Look & Mark for comparability, avoids CheXpert-F1's expert-correlation issues. |
+| 2 | Per-finding aggregation? | **Autoregressive generation** + per-finding-sentence aggregation. Each model generates a report; we identify sentences mentioning a VinDr disease class and align attention from that sentence's content tokens against the bbox for that class. Content-token mean (drop punctuation + stopwords) within each finding-sentence. |
+| 3 | Bbox rasterization grid? | Both: model-native grid AND a common 56×56 cross-model grid. Bbox → binary mask (filled rectangle) → renormalized to a probability distribution for the KL metric, kept as a binary mask for IoU/AUC. |
+| 4 | RadGraph version? | **RadGraph-XL** (Delbrouck et al., ACL Findings 2024). VinDr-CXR has no reference reports, so RadGraph-F1 is computed model-vs-model (e.g. MAIRA-2 as anchor) and against the VinDr class labels reduced to a canonical-template "reference report." Note this caveat in the paper. |
 | 5 | Hallucination metric? | **RaTEScore + RadGraph-XL** as primary metrics. Skip RadNLI (not used by closest baseline). Skip human eval (out of scope). Report CheXbert-F1 as a secondary number for older-literature comparability with a footnoted caveat. |
 | 6 | Compute precision? | **bf16 on L40S 48 GB (or larger)**. No bitsandbytes 4-bit. All three models fit comfortably: LLaVA-Med 7B ≈ 14 GB, MedGemma 4B ≈ 8 GB, MAIRA-2 7B ≈ 14 GB. Decided 2026-05-28 after Modal smoke test confirmed L40S availability. |
 
@@ -19,7 +26,7 @@ Plus one bonus decision driven by the MAIRA-2 architecture:
 
 | # | Bonus | Decision |
 |---|---|---|
-| 0 | MAIRA-2 bbox output as second grounding signal? | **Yes.** MAIRA-2 emits explicit bounding-box tokens during generation. Treat these as a parallel grounding channel: report (a) attention↔gaze alignment and (b) bbox↔gaze alignment separately. This is a free methodological lever — MAIRA-2 gets two signal columns in the headline table. |
+| 0 | MAIRA-2 bbox output as second grounding signal? | **Yes — even cleaner under BBoxProbe.** MAIRA-2 emits explicit bounding-box tokens. We report (a) MAIRA-2 attention ↔ VinDr radiologist bbox, and (b) MAIRA-2 emitted bbox ↔ VinDr radiologist bbox. Both signals are now in the same format (bbox vs bbox) → direct IoU comparison. The side-finding "is MAIRA-2's emitted bbox better-aligned with the radiologist than its own attention is?" is itself publishable. |
 
 ---
 
@@ -55,48 +62,69 @@ shape `[heads, query_tokens, key_tokens]`, slice to
 `query=text_tokens, key=image_tokens`. See `src/attn/`.
 
 **Open pilot for week 2.** For MedGemma specifically: run extraction on
-50 REFLACX cases at *every* layer (1–32), compute alignment-with-gaze
-KL per layer, pick the best 5 contiguous, freeze. Document the
-selected layer set in this file before running the full 3,032-case pass.
+50 VinDr-CXR cases at *every* layer (1–32), compute alignment-with-
+bbox-mask KL per layer, pick the best 5 contiguous, freeze. Document
+the selected layer set in this file before running the full
+2,000-case pass.
 
 ---
 
-## Q2: Per-sentence aggregation
+## Q2: Per-finding aggregation
 
-**Decision.** For each generated sentence in the report, extract one
-attention map per (model, sentence) by:
+**Decision.** Each model generates a report autoregressively for each
+case. We identify finding-sentences and align attention from each
+finding-sentence's content tokens against the bbox for the
+corresponding VinDr disease class.
 
-1. Tokenize the generated sentence with the model's tokenizer.
-2. Drop punctuation tokens and English stopwords (NLTK list +
-   model-specific special tokens like `<bos>`, `<image>`, `<eos>`).
-3. Take the **mean attention** of remaining content tokens.
+1. Generate the model's report (greedy, `do_sample=False`).
+2. Split into sentences via scispacy `en_core_sci_sm`.
+3. For each sentence, match against the 14 VinDr disease-class
+   keywords (with a small synonym table per class — e.g.
+   "consolidation" matches "airspace opacity," "infiltrate").
+4. For each matched (sentence, class) pair, extract attention from the
+   sentence's content tokens (drop punctuation + stopwords + special)
+   to the image tokens. Mean across content tokens, mean across the
+   spec-frozen mid-layer set, mean across heads.
+5. Compare against the VinDr bbox for that class (multi-rater union
+   by default; report per-rater spread as appendix).
 
-**Why not the period/EOS token.** Sentence-final tokens are well-known
-attention sinks; using them as a single signal biases toward whatever
-the model happens to "park" attention on at sentence boundaries.
+**Sentences with no matched class** still receive an extraction (used
+in qualitative figures and a "generic-attention baseline") but don't
+enter the per-pathology table.
 
-**Why not just the noun finding token (e.g., "pneumonia").** Requires
-a per-pathology keyword list, which biases evaluation toward the very
-pathologies REFLACX labels — a circular setup. We run this as a
-sanity-check ablation on 100 cases (drop-stopwords vs. noun-only) and
-report the delta in the appendix; if the delta is large, lift the
-ablation into the main results.
+**Why generate, not teacher-force.** VinDr-CXR has no reference
+dictation; teacher-forcing needs SOMETHING as the assistant content.
+The alternatives (synthetic template, gold-class-derived report) bias
+attention toward terms the model wouldn't otherwise produce. Free
+generation measures attention as it actually deploys.
 
-**Why content-token-mean.** It's symmetric across pathologies, requires
-no keyword list, and is robust to sentence-length variance because it's
-a mean rather than a sum.
+**Cost implication.** Generation is ~3× slower than teacher-forced
+forward. To stay within the Modal $30/month budget we **subset to
+~2,000 cases per model** (drawn from the 18k by stratified sampling
+across disease classes to keep per-class N reasonable). Statistical
+power for cross-model comparison and per-class breakdown remains
+strong for common classes; rare classes (Pneumothorax, Pleural
+thickening) thin out — acknowledge in §7 limitations.
+
+**Why not the period/EOS token.** Sentence-final tokens are
+well-known attention sinks. Same reasoning as GazeProbe v2.
+
+**Why content-token-mean.** Symmetric across pathologies, requires no
+per-class weighting, robust to sentence-length variance.
 
 ---
 
-## Q3: Gaze rasterization grid
+## Q3: Bbox rasterization grid
 
 **Decision.** Report alignment at **two grids in parallel**:
 
 1. **Native grid.** Each model gets its own grid matching its vision
    encoder's token layout. Attention maps are reshaped to 2D at this
-   grid; gaze is rasterized to the same grid via Gaussian KDE.
-2. **Common grid (56×56).** Both attention and gaze upsampled
-   (bilinear) to 56×56. Enables direct cross-model comparison.
+   grid; bbox is rasterized to the same grid as a filled-rectangle
+   binary mask.
+2. **Common grid (56×56).** Both attention and bbox mask upsampled
+   (bilinear / nearest, respectively) to 56×56. Enables direct
+   cross-model comparison.
 
 **Per-model native grid:**
 
@@ -106,23 +134,27 @@ a mean rather than a sum.
 | MedGemma-4B | MedSigLIP-400M @ 896² | 256 tokens = 16×16 | **16×16** |
 | MAIRA-2 | RAD-DINO ViT-B (verify patch size on load) | TBD | **TBD — confirm in week 1** |
 
-**Gaussian KDE bandwidth.** Use the σ recommended by the REFLACX
-reference protocol (Lanfredi et al., 2022). If their codebase ships a
-helper, call it directly. If not, σ corresponding to ~1° of visual
-angle at typical reading distance is the eye-tracking-literature
-default.
+**Bbox rasterization.** Rectangles in original-image coordinates
+(VinDr CSV ships `x_min, y_min, x_max, y_max` per finding) → resize
+to grid by setting every grid cell whose center lies inside the
+rectangle to 1, others to 0. For KL we renormalize to a probability
+distribution; for IoU and Pointing-Game we keep the binary mask.
+
+**Multi-rater bbox handling.** VinDr-CXR ships up to 3 radiologists per
+image per finding. Default: **union mask** (any rater's bbox counts).
+Report per-rater spread as an appendix table. The union choice is
+generous to the model and conservative against an "audit overclaims"
+critique.
 
 **Why both grids.** Native grid keeps the model's representation
 honest; common grid keeps the cross-model table apples-to-apples.
-Reporting only native makes cross-model alignment numbers
-non-comparable; reporting only common discards model-specific
-geometric fidelity.
 
-**Implementation.** `src/metrics/rasterize.py`. Function signature:
+**Implementation.** `src/metrics/rasterize.py`. Two helpers:
 ```python
-def rasterize_gaze(fixations, grid_hw, sigma=...) -> np.ndarray:  # [H, W]
-def reshape_attention(attn_1d, native_hw) -> np.ndarray:           # [H, W]
-def to_common_grid(attn_2d, target_hw=(56, 56)) -> np.ndarray:
+def rasterize_bbox_to_grid(bboxes, image_hw, grid_edge) -> np.ndarray:  # [G, G]
+def rasterize_gaze_to_grid(fixations, ...) -> np.ndarray:               # kept for future
+def reshape_attention_to_grid(attn_1d, native_hw) -> np.ndarray:
+def upsample_to_common_grid(grid_2d, target_hw=(56, 56)) -> np.ndarray:
 ```
 
 ---
@@ -175,51 +207,77 @@ report to disk.
 ## Q0 (bonus): MAIRA-2 bbox output
 
 **Decision.** Treat MAIRA-2's generated bbox tokens as a **second
-grounding signal**, audited independently against gaze.
+grounding signal**, audited independently against the VinDr radiologist
+bbox.
 
 **Why.** MAIRA-2 is the only one of the three models that produces an
 explicit, model-internal localization output via its 100×100 tokenized
 bbox grid. Skipping this would mean evaluating MAIRA-2 *only* through
 attention while ignoring the signal the model itself thinks is most
-important for grounding. That weakens the paper.
+important for grounding.
 
 **What this adds to the headline tables.**
 - Table 2 (models × metric × baseline) gets a column for "MAIRA-2 (attn)"
   and a column for "MAIRA-2 (bbox)" — same model, two grounding signals.
-- Table 2 caption explicitly compares the two: is MAIRA-2's emitted
-  bbox a more faithful gaze-aligned signal than its internal attention?
-  This is itself a publishable side-finding.
+- Both columns are now in the same FORMAT as the ground truth (bbox).
+  IoU between MAIRA-2's emitted bbox and the VinDr radiologist bbox is
+  a direct, naturally-interpretable number.
+- Table 2 caption explicitly asks: **is MAIRA-2's emitted bbox better-
+  aligned with the radiologist bbox than its own attention is?** This
+  is itself a publishable side-finding, easier to land than the analogous
+  GazeProbe question (which compared bbox to gaze — different formats).
 
-**Implementation.** Already partly free: MAIRA-2's generate call emits
-the bbox tokens in the report string. Parse them, rasterize as a
-filled rectangle on the native grid, and run the same alignment
-metrics as for attention.
+**Implementation.** MAIRA-2's generate call emits bbox tokens in the
+report string. Parse them, rasterize as a filled rectangle on the
+native grid, and run the same alignment metrics as for the
+attention-derived map.
 
 ---
 
 ## What this spec does NOT decide
 
 - ~~**4-bit vs. fp16 attention delta.**~~ **Resolved 2026-05-28** by
-  decision Q6 above: we run in bf16 on L40S 48 GB. The previous concern
-  (does nf4 corrupt the attention distribution) is moot when no
-  quantization is used. The bf16 vs fp32 delta is a known small effect
-  in the saliency-literature noise floor and we accept it.
+  Q6 above: bf16 on L40S 48 GB. No quantization, no concern.
 - **Exact prompt template per model.** Week 1 work; each model has a
   preferred CXR-report prompt format from its model card / paper. Use
   the model-card prompt verbatim, document in `docs/prompts.md`.
 - **What counts as a "sentence."** Use scispaCy `en_core_sci_sm` for
   sentence splitting — handles "1.5cm" / "T2-weighted" / abbreviations
   better than default sentencizers. Document the version pin.
+- **VinDr class → keyword synonym table.** Week 1 work. Each of the 14
+  VinDr classes gets a small set of clinical synonyms (e.g.
+  "Consolidation" matches "consolidation", "airspace opacity",
+  "infiltrate"). Commit the table to `docs/vindr-class-synonyms.md`
+  so the matching is auditable and reviewable.
+- **Stratified 2k-case subset.** Week 1 work. Sample 2,000 cases per
+  model so each of the 14 classes is represented, with oversampling
+  for rare classes (Pneumothorax, Pleural thickening) capped at
+  available N. Document the seed and the per-class N in
+  `docs/subset-sampling.md`.
 
 ---
 
 ## References
 
+### Methodology
 - [arxiv 2503.06287](https://arxiv.org/html/2503.06287) — Your LVLM Only Needs A Few Attention Heads For Visual Grounding
 - [arxiv 2411.10950](https://arxiv.org/html/2411.10950v1) — Mechanistic Interpretability of LLaVA in VQA
 - [arxiv 2403.06764](https://arxiv.org/html/2403.06764v3) — Image Is Worth 1/2 Tokens After Layer 2 (attention-sink evidence)
+
+### Models
 - [arxiv 2406.04449](https://arxiv.org/html/2406.04449v1) — MAIRA-2 paper
 - [arxiv 2507.05201](https://arxiv.org/html/2507.05201v2) — MedGemma Technical Report
-- [arxiv 2505.22222](https://arxiv.org/html/2505.22222) — Look & Mark (closest baseline)
+
+### Dataset
+- [Nguyen et al., Sci Data 2022](https://www.nature.com/articles/s41597-022-01498-w) — VinDr-CXR dataset paper
+- [Kaggle competition release](https://www.kaggle.com/competitions/vinbigdata-chest-xray-abnormalities-detection) — our actual data source
+
+### Closest scoop-check threats (cleared 2026-05-29)
+- [arxiv 2510.11196](https://arxiv.org/abs/2510.11196) — Reasoning faithfulness via perturbations. *Different signal class.*
+- [arxiv 2510.19599](https://arxiv.org/abs/2510.19599) — XBench: CLIP-style VLMs only. *Different model class.*
+- [arxiv 2511.00504](https://arxiv.org/abs/2511.00504) — VinDr-CXR-VQA: new dataset, single-model bench. *Different scope.*
+- [arxiv 2505.22222](https://arxiv.org/html/2505.22222) — Look & Mark: gaze+bbox prompt-level ICL intervention, not an audit. *Different framework.*
+
+### Eval
 - [Delbrouck et al., ACL Findings 2024](https://aclanthology.org/2024.findings-acl.765/) — RadGraph-XL
 - [arxiv 2406.16845](https://arxiv.org/abs/2406.16845) — RaTEScore

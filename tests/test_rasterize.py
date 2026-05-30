@@ -12,10 +12,115 @@ import pandas as pd
 import pytest
 
 from src.metrics.rasterize import (
+    rasterize_bbox_to_grid,
     rasterize_gaze_to_grid,
     reshape_attention_to_grid,
     upsample_to_common_grid,
 )
+
+
+# --------------------------------------------------------------------- #
+# rasterize_bbox_to_grid
+# --------------------------------------------------------------------- #
+
+class TestRasterizeBbox:
+    def test_single_centered_bbox_covers_center_cells(self):
+        # Image 512x512, bbox covering the central 1/4 area
+        grid = rasterize_bbox_to_grid(
+            [(128, 128, 384, 384)],
+            image_hw=(512, 512),
+            grid_edge=8,
+            as_probability=False,
+        )
+        # Centers of cells (1,2,3,4,5,6) along each axis fall inside
+        # [128, 384) at cell width 64 → centers 32, 96, 160, 224, 288, 352, 416, 480.
+        # Centers 160, 224, 288, 352 are inside [128, 384). That's 4 per axis.
+        # → 4x4 = 16 cells active out of 64.
+        assert grid.sum() == 16
+        assert grid[3, 3] == 1.0 and grid[4, 4] == 1.0
+        assert grid[0, 0] == 0.0
+
+    def test_probability_normalization_sums_to_one(self):
+        grid = rasterize_bbox_to_grid(
+            [(100, 100, 300, 300)],
+            image_hw=(512, 512), grid_edge=16,
+            as_probability=True,
+        )
+        assert grid.sum() == pytest.approx(1.0, abs=1e-6)
+        assert grid.dtype == np.float32
+
+    def test_binary_mode_returns_zero_one(self):
+        grid = rasterize_bbox_to_grid(
+            [(100, 100, 300, 300)],
+            image_hw=(512, 512), grid_edge=8,
+            as_probability=False,
+        )
+        # All values are 0.0 or 1.0
+        unique_vals = set(np.unique(grid).tolist())
+        assert unique_vals.issubset({0.0, 1.0})
+
+    def test_empty_bbox_list_uniform_when_probability(self):
+        grid = rasterize_bbox_to_grid(
+            [], image_hw=(512, 512), grid_edge=4, as_probability=True,
+        )
+        assert grid.shape == (4, 4)
+        assert grid.sum() == pytest.approx(1.0, abs=1e-6)
+        # Uniform → all cells equal
+        assert np.allclose(grid, grid[0, 0], atol=1e-7)
+
+    def test_empty_bbox_list_zeros_when_binary(self):
+        grid = rasterize_bbox_to_grid(
+            [], image_hw=(512, 512), grid_edge=4, as_probability=False,
+        )
+        assert grid.sum() == 0.0
+
+    def test_union_of_multiple_bboxes(self):
+        # Two disjoint bboxes → union is both cells
+        grid = rasterize_bbox_to_grid(
+            [(0, 0, 128, 128), (384, 384, 512, 512)],
+            image_hw=(512, 512), grid_edge=4,
+            as_probability=False,
+        )
+        # 4x4 grid, cell width 128. Cell centers at (64, 192, 320, 448).
+        # First bbox (0-128, 0-128): only cell (0,0) center at (64,64) is inside.
+        # Second bbox (384-512, 384-512): only cell (3,3) center at (448,448).
+        assert grid[0, 0] == 1.0
+        assert grid[3, 3] == 1.0
+        assert grid.sum() == 2.0
+
+    def test_dataframe_input(self):
+        df = pd.DataFrame({
+            "x_min": [100, 350], "y_min": [100, 350],
+            "x_max": [200, 450], "y_max": [200, 450],
+        })
+        grid = rasterize_bbox_to_grid(
+            df, image_hw=(512, 512), grid_edge=8, as_probability=False,
+        )
+        assert grid.sum() > 0
+
+    def test_numpy_input(self):
+        arr = np.array([[100, 100, 200, 200], [350, 350, 450, 450]])
+        grid = rasterize_bbox_to_grid(
+            arr, image_hw=(512, 512), grid_edge=8, as_probability=False,
+        )
+        assert grid.sum() > 0
+
+    def test_malformed_bbox_raises(self):
+        with pytest.raises(ValueError):
+            rasterize_bbox_to_grid(
+                [(200, 200, 100, 100)],  # x_max < x_min
+                image_hw=(512, 512), grid_edge=4,
+            )
+
+    def test_native_grid_sizes_for_each_model(self):
+        # Sanity: one bbox, all three model-native grid sizes work
+        bb = [(100, 100, 300, 300)]
+        for edge in (16, 24, 37):
+            grid = rasterize_bbox_to_grid(
+                bb, image_hw=(512, 512), grid_edge=edge, as_probability=True,
+            )
+            assert grid.shape == (edge, edge)
+            assert grid.sum() == pytest.approx(1.0, abs=1e-5)
 
 
 # --------------------------------------------------------------------- #

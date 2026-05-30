@@ -1,32 +1,55 @@
-# Paper skeleton — GazeProbe
+# Paper skeleton — BBoxProbe v1
 
 Working title:
-**How Faithful Is Medical-VLM Attention? A Cross-Model Audit Against Radiologist Gaze**
+**How Faithful Is Medical-VLM Attention? A Cross-Model Audit Against Radiologist Bounding-Box Annotations**
 
-Target: 6–8 pages, workshop format (ML4H 2026 / iMIMIC 2026). arXiv
-tech report independent of workshop outcome.
+Target: 6–8 pages, primary target **iMIMIC 2026** (MICCAI Workshop on
+Interpretability of MachIne intelligence in Medical Image Computing —
+the methodological fit is direct: medical-VLM interpretability is the
+workshop's exact scope). Fallback: ML4H 2026 (NeurIPS workshop).
+arXiv tech report independent of workshop outcome.
+
+When the iMIMIC 2026 CFP is released (typically late spring), check
+the page limit (recent years: 8 pages LNCS including references) and
+adapt this skeleton's word budgets accordingly. Springer LNCS style
+file required.
 
 This file is a working outline. Each section has (a) what it does,
 (b) bullet-level content, (c) what figure/table lives there. Convert to
 LaTeX (`paper/main.tex`) once a workshop style file is committed.
 
+Project lineage note: this paper subsumes the gaze-based predecessor
+(GazeProbe, git tag `gaze-v0.1`); we pivoted to bbox audit on
+VinDr-CXR after PhysioNet credentialing review introduced an
+indefinite wait. Methodology, code, metrics, infrastructure all
+transferred unchanged.
+
 ---
 
 ## Abstract (≈ 200 words)
 
-- One sentence on the gap: medical VLMs produce confident CXR reports,
-  attention faithfulness vs. radiologist behavior is unmeasured across
-  released checkpoints.
+- One sentence on the gap: medical VLMs produce confident CXR
+  reports, but attention faithfulness against domain-expert spatial
+  grounding is unmeasured across released checkpoints.
 - One sentence on what we do: cross-model audit of LLaVA-Med-1.5,
-  MedGemma-4B, MAIRA-2 against REFLACX gaze, 3,032 cases.
+  MedGemma-4B, and MAIRA-2 against VinDr-CXR radiologist bounding
+  boxes, on a 2,000-case stratified subset of 14 disease classes.
 - Two sentences on findings (placeholder until experiments land):
-  *"We find a large, model-specific, pathology-dependent alignment gap.
-  For [model X] on [pathology Y], cross-attention is statistically
-  indistinguishable from a uniform prior."*
-- One sentence on why it matters: alignment correlates with downstream
-  factuality — the gap is not cosmetic, it predicts report errors.
-- One sentence on what this is not: not a new method; not a new training
-  recipe. The probe motivates Phase 2 work on targeted intervention.
+  *"We find a large, model-specific, class-dependent alignment gap.
+  For [model X] on [class Y], cross-attention overlap with the
+  radiologist bbox is statistically indistinguishable from a uniform
+  prior."*
+- One sentence on the MAIRA-2 side-finding (placeholder):
+  *"For MAIRA-2 specifically, the model's emitted bounding box is
+  better aligned with the radiologist annotation than its own
+  internal cross-attention is, suggesting the grounding head is more
+  faithful than the attention pattern that produced it."*
+- One sentence on why it matters: alignment correlates with
+  downstream factuality — the gap is not cosmetic, it predicts
+  report errors.
+- One sentence on what this is not: not a new method; not a new
+  training recipe. The probe motivates Phase 2 work on targeted
+  intervention.
 
 ---
 
@@ -43,51 +66,70 @@ elsewhere than the diagnostically relevant region — the report can be
 right *despite* the visual evidence, not *because* of it. That makes the
 system fragile under distribution shift.
 
-**Move 3 — Why gaze.** Radiologist gaze (REFLACX) is the closest available
-ground-truth proxy for "where a domain expert spent attention while
-forming a finding." Aligning model attention with gaze is one operational
-definition of visual-evidence faithfulness.
+**Move 3 — Why bbox.** Radiologist-drawn bounding boxes are the
+shared gold standard for spatial grounding across the medical-imaging
+literature. A bbox marks "where the finding is" — a strictly
+necessary (if not sufficient) target for any model that claims to
+reason about that finding visually. Aligning model attention with
+the bbox is one operational definition of visual-evidence
+faithfulness; unlike gaze, it does not require eye-tracking
+infrastructure and is directly comparable to model-emitted
+grounding boxes (relevant for MAIRA-2).
 
 **Move 4 — Why now, why these three models.** LLaVA-Med-1.5 (general
-adapter), MedGemma-4B (Google), MAIRA-2 (grounded reporting) span the
-architectural diversity of open medical VLMs in 2026. They have not been
-compared on this axis.
+adapter), MedGemma-4B (Google's medical Gemma), MAIRA-2 (grounded
+reporting with emitted bboxes) span the architectural diversity of
+open medical VLMs in 2026. None has been compared on attention
+faithfulness, and the three-way comparison is what makes
+model-specific failure modes visible.
 
 **Move 5 — Contributions.**
-1. First cross-model audit of attention–gaze alignment for medical VLMs
-   on REFLACX.
-2. Per-pathology breakdown identifying where attention is below random.
-3. Correlation analysis: alignment vs. report factuality vs.
-   hallucination rate, per case.
-4. Released code + HuggingFace demo showing the three models'
-   attention maps side-by-side with gaze overlay.
+1. First cross-model audit of attention–bbox alignment for medical
+   VLMs on VinDr-CXR (Kaggle release, 14 disease classes,
+   multi-rater).
+2. Per-class breakdown identifying where attention is at-or-below a
+   random baseline.
+3. Correlation analysis: per-case alignment vs. RadGraph-XL F1 and
+   RaTEScore.
+4. Side-finding: for MAIRA-2, comparison between its emitted bbox
+   and its internal attention, both vs. the radiologist bbox.
+5. Released code + HuggingFace demo showing the three models'
+   attention maps + MAIRA-2's emitted bbox + the gold radiologist
+   bbox side-by-side.
 
-**Move 6 — What this is not.** Not a new gaze-supervised pretraining
-(CoGaze, GazeX, Eyes-on-the-Image already do that). Not a new
-training-free intervention with gaze (Look & Mark already does that).
-This is the diagnostic measurement that motivates future intervention.
+**Move 6 — What this is not.** Not a new bbox-supervised pretraining
+(many CXR detectors already do that). Not a new training-free
+intervention (Look & Mark already pairs prompt-level bbox/gaze hints
+with medical VLMs). Not a perturbation-based faithfulness audit
+([arxiv 2510.11196](https://arxiv.org/abs/2510.11196) covers that
+angle). Not a CLIP-style VLM benchmark
+([arxiv 2510.19599 XBench](https://arxiv.org/abs/2510.19599) covers
+the encoder-only direction). This is the cross-model, autoregressive-
+LVLM, spatial-alignment audit — the cell of the design matrix that
+remains open.
 
 ---
 
 ## 2. Related work (≈ 0.75 page)
 
-Group into four buckets. Cite tightly; do not turn this into a survey.
+Group into four buckets. Cite tightly; do not turn this into a
+survey.
 
-**2.1 Medical VLMs for CXR reporting.** LLaVA-Med (Li et al., 2024),
-MedGemma (Google DeepMind, 2025), MAIRA-2 (Bannur et al., 2024). Note
-that none publish faithfulness numbers.
+**2.1 Medical VLMs for CXR reporting.** LLaVA-Med (Li et al.,
+2024), MedGemma (Google DeepMind, 2025), MAIRA-2 (Bannur et al.,
+2024). Note that none publish attention-grounding faithfulness
+numbers against radiologist bboxes.
 
-**2.2 Gaze-supervised training of medical VLMs.** CoGaze
-([2603.26049](https://arxiv.org/abs/2603.26049)), GazeX
-([2604.14316](https://arxiv.org/abs/2604.14316)), Eyes-on-the-Image
-([2508.13068](https://arxiv.org/abs/2508.13068)),
-Thinking-with-Gaze ([2603.06697](https://arxiv.org/html/2603.06697)),
-RadEyeVideo ([2507.09097](https://arxiv.org/abs/2507.09097)). *Gap:*
-all train new models; none audit released checkpoints.
+**2.2 Spatial-grounding benchmarks for medical VLMs.** XBench
+([2510.19599](https://arxiv.org/abs/2510.19599)) benchmarks
+encoder-only CLIP-style VLMs (BioVIL, MedCLIP, etc.) on
+radiologist-annotated regions. VinDr-CXR-VQA
+([2511.00504](https://arxiv.org/abs/2511.00504)) extends VinDr-CXR
+with VQA pairs and benchmarks MedGemma alone. *Gap:* neither audits
+cross-attention of multiple autoregressive LLM-based VLMs.
 
-**2.3 Training-free gaze-based intervention.** Look & Mark
+**2.3 Training-free interventions for grounding.** Look & Mark
 ([2505.22222](https://arxiv.org/abs/2505.22222)): prompt-level ICL with
-gaze + bbox on LLaVA-Med and others. *Gap:* shows intervention helps,
 but does not measure the underlying alignment that the intervention
 is correcting.
 
@@ -105,23 +147,30 @@ gaze.
 **3.1 Models.** Released checkpoints, bf16, inference only. Hardware:
 Modal L40S 48 GB. For each model: what layer produces the
 cross-attention we extract, which token positions in the generated
-report we condition on (per-sentence aggregation).
+report we condition on (per-finding-sentence aggregation).
 
-**3.2 Dataset.** REFLACX 3,032 cases, 5 radiologists. Gaze traces are
-fixation polygons with timestamps; we rasterize to a heatmap at the
-model's vision-encoder patch grid. Bounding boxes (Lanfredi labels) used
-as a secondary ground-truth signal.
+**3.2 Dataset.** VinDr-CXR (Kaggle "VinBigData Chest X-ray
+Abnormalities Detection" release), 18,000 frontal CXRs with bbox
+annotations across 14 disease classes by 17 radiologists (3 readers
+per image). We use a stratified 2,000-case subset per model, with
+per-class oversampling for rare conditions capped at available N.
+Multi-rater bboxes handled by union; per-rater spread reported as
+appendix. See `docs/extraction-spec.md` §Q3 + §"What this spec does
+NOT decide" for subset-sampling and class-synonym table details.
 
 **3.3 Alignment metrics.**
-- **KL(attn ∥ gaze)** — gaze rasterized to same grid, both row-stochastic.
-- **AUC(attn, gaze>τ)** — treat thresholded gaze as binary, attention as
-  score.
-- **IoU(top-k attn, bbox)** — discrete grounding metric.
-- **NSS, CC** (eye-tracking-standard metrics) — for comparability with
-  the saliency literature.
+- **IoU(top-k attn, bbox)** — primary metric for BBoxProbe since bbox
+  is naturally a region.
+- **KL(attn ∥ bbox-mask-normalized)** — both renormalized to
+  probability distributions.
+- **AUC(attn, bbox-binary)** — attention as score, bbox interior as
+  positive class.
+- **NSS, CC** — saliency-literature standards for completeness with
+  prior gaze-audit literature.
+- **MAIRA-2 bonus column:** IoU(emitted bbox, radiologist bbox).
 
-**3.4 Baselines.** Random attention, uniform, CLIP-image-text similarity,
-Grad-CAM at the same layer.
+**3.4 Baselines.** Random attention, uniform, CLIP-image-text
+similarity, Grad-CAM at the same layer.
 
 **Table 1.** Models × what-we-extract spec sheet.
 
@@ -134,8 +183,10 @@ which sentence-token positions used for conditioning. Crucial for
 reproducibility because this varies by architecture. State the choice
 and the justification in 2–3 sentences per model.
 
-**Figure 1.** Pipeline diagram: CXR → model → per-sentence cross-attention
-map → grid-aligned to REFLACX gaze rasterization → alignment metric.
+**Figure 1.** Pipeline diagram: CXR → model autoregressive generation
+→ per-finding-sentence cross-attention map → grid-aligned to
+VinDr-CXR bbox-mask rasterization → alignment metric. Side branch:
+MAIRA-2 generated-bbox parse → same grid → IoU vs radiologist bbox.
 
 ---
 
@@ -148,25 +199,36 @@ self-reported attention figures imply.
 
 **Table 2.** Models × metric × baseline.
 
-**5.2 Per-pathology alignment.** Heatmap (models × 13 pathologies) of
-mean alignment. Identify which cells are at-or-below the random baseline.
+**5.2 Per-class alignment.** Heatmap (models × 14 VinDr disease
+classes) of mean IoU. Identify which (model × class) cells are
+at-or-below the random baseline.
 
 **Figure 2.** Heatmap. The headline figure of the paper.
 
 **5.3 Correlation with downstream factuality.** Per case, regress
-RadGraph-F1 on alignment score; same for NLI-hallucination rate.
-Stratify by pathology.
+RadGraph-XL F1 on alignment score; same for RaTEScore. Stratify by
+disease class.
 
-**Figure 3.** Two scatter plots (RadGraph-F1 vs. alignment;
-hallucination rate vs. alignment), one per model overlaid.
+**Figure 3.** Two scatter plots (RadGraph-XL F1 vs. alignment;
+RaTEScore vs. alignment), one per model overlaid.
 
-**5.4 Inter-radiologist variance ceiling.** REFLACX has 5 radiologists;
-compute radiologist-vs-radiologist alignment as the ceiling. Report
-each model as a fraction of the radiologist-pair ceiling — this contains
+**5.4 Inter-radiologist variance ceiling.** VinDr-CXR has 3
+radiologists per image. Compute radiologist-vs-radiologist bbox IoU
+(by union and by per-rater pairwise) as the ceiling. Report each
+model as a fraction of the radiologist-pair ceiling — this contains
 the "model attention can't be more aligned than another radiologist"
-sanity bound.
+sanity bound. Per-rater spread is small for well-defined classes
+(consolidation, effusion) and larger for diffuse/subtle classes —
+expected and itself a reportable observation.
 
 **Table 3.** Radiologist-pair ceiling vs. each model.
+
+**5.5 MAIRA-2 dual-signal comparison.** Same metrics on MAIRA-2's
+emitted bbox vs. the radiologist bbox, compared to MAIRA-2's
+internal attention vs. the radiologist bbox. Direct bbox-vs-bbox IoU
+is the natural metric.
+
+**Table 4.** MAIRA-2 attention vs. emitted bbox vs. radiologist bbox.
 
 ---
 
@@ -229,7 +291,8 @@ decisions:
 2. **Per-sentence aggregation:** mean over content tokens (drop
    punctuation + stopwords). Noun-only as ablation on 100 cases.
 3. **Gaze grid:** both native per-model grids AND a common 56×56 grid;
-   Gaussian-KDE rasterization with REFLACX reference σ.
+   Bbox → binary mask rasterization (filled rectangle) renormalized
+   to a probability distribution for KL.
 4. **RadGraph:** XL (matches Look & Mark).
 5. **Hallucination:** RaTEScore + RadGraph-XL (matches Look & Mark).
    Skip RadNLI, skip BLEU/ROUGE, skip human eval.

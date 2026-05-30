@@ -1,45 +1,55 @@
-# GazeProbe — How Faithful Is Medical-VLM Attention?
+# BBoxProbe — How Faithful Is Medical-VLM Attention?
 
 ![tests](https://github.com/SYEDFAIZAN1987/Probe_Research/actions/workflows/test.yml/badge.svg)
 
-A cross-model audit of attention–gaze alignment in three released medical
-vision–language models, evaluated against radiologist eye-tracking on
-chest X-rays.
+A cross-model audit of attention–bbox alignment in three released
+medical vision–language models, evaluated against radiologist-drawn
+bounding-box annotations on chest X-rays.
 
-> **Status:** work in progress. Target venue: ML4H 2026 (NeurIPS workshop)
-> or iMIMIC 2026 (MICCAI workshop). arXiv tech report regardless of
-> workshop acceptance.
+> **Status:** work in progress.
+> **Primary target venue:** iMIMIC 2026 — the [Interpretability of
+> MachIne intelligence in Medical Image Computing](https://imimic-workshop.com/)
+> workshop at MICCAI 2026. Methodological fit is direct: medical-VLM
+> interpretability is the workshop's stated scope.
+> **Fallback:** ML4H 2026 (NeurIPS workshop).
+> arXiv tech report posted regardless of workshop outcome.
+>
+> **Project lineage:** pivoted on 2026-05-29 from GazeProbe (REFLACX
+> radiologist gaze) to BBoxProbe (VinDr-CXR radiologist bbox) to
+> escape an indefinite PhysioNet credentialing wait. The gaze-version
+> state is preserved at git tag `gaze-v0.1`.
 
 ## One-line thesis
 
-Open medical VLMs produce confident chest-X-ray reports, but nobody has
-measured how well their internal cross-attention aligns with **where
-radiologists actually look** — and a systematic per-pathology audit across
-LLaVA-Med-1.5, MedGemma-4B, and MAIRA-2 reveals a large, model-specific,
-pathology-dependent alignment gap that correlates with downstream report
-errors.
+Open medical VLMs produce confident chest-X-ray reports, but nobody
+has measured how well their internal cross-attention aligns with
+**where radiologists drew the abnormality on the image** — and a
+systematic per-pathology audit across LLaVA-Med-1.5, MedGemma-4B, and
+MAIRA-2 reveals a large, model-specific, pathology-dependent
+alignment gap that correlates with downstream report errors.
 
 ## Headline questions
 
-1. How well does each model's per-sentence cross-attention align with
-   REFLACX radiologist gaze fixations?
-2. How does that alignment vary across the 13 REFLACX pathologies?
-3. Does higher attention–gaze alignment predict better downstream report
-   factuality (RadGraph-F1) and lower hallucination rate
-   (NLI on Radiology-NLI)?
-4. For which (model × pathology) cells is attention no better than
-   random — or actively *anti*-correlated with gaze?
+1. How well does each model's per-finding-sentence cross-attention
+   align with the VinDr-CXR radiologist bbox for that finding?
+2. How does that alignment vary across the 14 VinDr-CXR disease
+   classes?
+3. Does higher attention–bbox alignment predict better downstream
+   report factuality (RadGraph-XL F1) and lower hallucination rate
+   (RaTEScore)?
+4. For which (model × class) cells is attention no better than random
+   — or actively *anti*-correlated with the radiologist bbox?
 
 ## What this is *not*
 
 - **Not a new training method.** All three VLMs are evaluated as
   released; no fine-tuning, no LoRA.
-- **Not a new gaze-based intervention.** Look & Mark
-  ([arXiv 2505.22222](https://arxiv.org/abs/2505.22222)) and
-  CoGaze ([arXiv 2603.26049](https://arxiv.org/abs/2603.26049)) already
-  own that lane. This work measures the gap; closing it is future work.
-- **Not multilingual, not 3D, not pediatric.** Scope is REFLACX 2D
-  adult-CXR English-language reports.
+- **Not a new bbox-based intervention.** Look & Mark
+  ([arXiv 2505.22222](https://arxiv.org/abs/2505.22222)) already
+  occupies the prompt-level gaze+bbox intervention lane. This work
+  measures the gap; closing it is future work.
+- **Not multilingual, not 3D, not pediatric.** Scope is VinDr-CXR
+  adult-CXR with the Kaggle competition release's 14 disease classes.
 
 ## Models audited
 
@@ -51,50 +61,73 @@ errors.
 
 ## Dataset
 
-[REFLACX](https://physionet.org/content/reflacx-xray-localization/1.0.0/)
-(Lanfredi et al., 2022) — 3,032 chest-radiograph cases with per-radiologist
-fixation traces, bounding-box annotations, and transcribed dictation.
-Built on top of MIMIC-CXR images.
+[VinDr-CXR](https://vindr.ai/cxr) (Nguyen et al., Sci Data 2022), via
+the [Kaggle "VinBigData Chest X-ray Abnormalities Detection"
+competition release](https://www.kaggle.com/competitions/vinbigdata-chest-xray-abnormalities-detection)
+— 18,000 frontal chest radiographs with bounding-box annotations
+across 14 disease classes by a pool of 17 radiologists (3 readers per
+image).
 
-**Access:** PhysioNet credentialed access required (CITI training
-+ application). Lead time ≈ 1 week; **start this on day one.**
+**Access:** free with Kaggle account + acceptance of the competition
+DUA. No CITI training, no review wait.
+
+The full 22-class VinDr-CXR release is on PhysioNet under credentialed
+access; we deliberately use the smaller, immediately-available Kaggle
+subset. The 14-class label set covers all common CXR pathologies
+including consolidation, pleural effusion, cardiomegaly, atelectasis,
+pneumothorax, and nodule/mass.
 
 ## Experiments
 
 | # | Experiment | Output |
 |---|---|---|
-| 1 | Inference on all 3 models × 3,032 cases — per-sentence cross-attention maps extracted and cached to disk | `data/attn/{model}/{case_id}.pt` |
-| 2 | Alignment metrics (attn↔gaze KL, attn↔gaze AUC, attn↔bbox IoU) per case, per model | `data/metrics/per_case.parquet` |
+| 1 | Inference + autoregressive generation on all 3 models × ~2,000 VinDr cases (stratified subset) — extract per-finding-sentence cross-attention maps | `data/attn/{model}/{image_id}.pt` |
+| 2 | Alignment metrics (attn↔bbox IoU, KL, AUC, NSS, CC) per (case, class, model) | `data/metrics/per_finding.parquet` |
 | 3 | Baselines: random attention, uniform, CLIP-similarity, Grad-CAM | `data/baselines/*.parquet` |
-| 4 | Correlation: per-case alignment vs. RadGraph-F1 vs. NLI-hallucination rate | `paper/figures/fig_correlation.pdf` |
-| 5 | Attention-pathology map: (model × pathology) cells where attention is at-or-below random | `paper/tables/tab_pathology.tex` |
+| 4 | Correlation: per-case alignment vs. RadGraph-XL F1 vs. RaTEScore | `paper/figures/fig_correlation.pdf` |
+| 5 | Attention-pathology map: (model × class) cells where attention is at-or-below random | `paper/tables/tab_pathology.tex` |
 | 6 | Qualitative figure: 8 case studies with best/worst alignment side-by-side | `paper/figures/fig_qualitative.pdf` |
+
+**Bonus (MAIRA-2 only):** MAIRA-2's emitted bbox tokens are treated
+as a second grounding signal and audited independently against the
+radiologist bbox. Both are now bbox-vs-bbox → direct IoU. The side-
+question "is the model's emitted bbox better-aligned with the
+radiologist than its own attention is?" is itself publishable.
 
 ## Compute budget
 
-| | Hours (A40) | $ at $0.39/hr | $ at $0.55/hr |
-|---|---|---|---|
-| Planned inference + analysis | ~40 | ~$16 | ~$22 |
-| 50% buffer (debugging, restarts) | +20 | +$8 | +$11 |
-| **Total cap** | **~60 hr** | **~$24** | **~$33** |
+Modal Starter plan: $30/month, per-second billing, no rollover.
+Project spans 2 calendar months → effective $60 budget.
+
+| Phase | GPU-hours @ L40S | $ |
+|---|---|---|
+| Layer pilot (MedGemma, 50 cases) | 0.5 | $1.00 |
+| Attention extraction (3 models × 2k cases) | ~3 | ~$6 |
+| Generation pass for downstream eval | ~5 | ~$10 |
+| Baselines + analysis (CPU-feasible) | 0 | $0 |
+| Debug + restart buffer | 2 | ~$4 |
+| **Total** | **~10 hr** | **~$21** |
+
+Plenty of headroom in one month's $30. Cross-month buffer if a
+debugging spiral happens.
 
 Hard rules:
-- bf16 for inference (no quantization). All three models fit
-  comfortably on L40S 48 GB.
-- Attention extraction cached to disk on first pass; never re-run.
-- RunPod community / spot instances; tolerate preemption (resume from
-  case-id checkpoint).
+- bf16 inference (no quantization). All three models fit comfortably
+  on L40S 48 GB.
+- Attention maps cached to Modal Volume on first pass; never re-run.
+- Stop pods immediately when a function returns. Per-second billing
+  punishes idleness less than RunPod but it still adds up.
 
 ## Timeline (8 weeks, solo)
 
 | Week | Goal | Done-when |
 |---|---|---|
-| 1 | REFLACX downloaded + format-explored (fixations, bboxes, case→image map); env reproduces one LLaVA-Med inference number on a 10-case subset | one working notebook + a `data/reflacx_explore.ipynb` documenting the data schema |
-| 2 | Attention extraction wrappers for all 3 models; alignment metric code | metrics computed on 100-case subset |
-| 3 | Full-dataset attention extraction (all 3 models × 3,032 cases) | `data/attn/` populated |
-| 4 | Alignment + baselines: experiments 2 and 3 | per-case metrics frozen |
-| 5 | Correlation analysis + attention-pathology map: experiments 4 and 5 | win/loss table frozen |
-| 6 | Qualitative figures + RadGraph-F1 + NLI-hallucination eval | all results frozen |
+| 1 | VinDr-CXR Kaggle download to Modal Volume; env reproduces one LLaVA-Med inference on a 10-case subset; class-synonym table committed | `data/vindr/`populated + `docs/vindr-class-synonyms.md` |
+| 2 | Attention extraction wrappers for all 3 models validated on first GPU run; MedGemma layer pilot completed and frozen | layer-pilot recommendation merged into `docs/extraction-spec.md` §Q1 |
+| 3 | Full attention extraction + generation pass on 2,000-case subset × 3 models | `data/attn/` populated |
+| 4 | Alignment + baselines: experiments 2 and 3 | per-finding metrics frozen |
+| 5 | Correlation + attention-pathology map: experiments 4 and 5 | win/loss table frozen |
+| 6 | Qualitative figures + RadGraph-XL + RaTEScore eval | all results frozen |
 | 7 | Draft 6–8 page arXiv tech report | PDF on arXiv |
 | 8 | Polish GitHub repo + HuggingFace Space demo + 1-page summary PDF | application-ready |
 
@@ -103,54 +136,84 @@ Hard rules:
 1. **arXiv tech report** (6–8 pages, workshop format).
 2. **GitHub repo** with `reproduce.sh`. No new model weights (probe-only).
 3. **HuggingFace Space demo:** upload a CXR, see all three models'
-   attention maps side-by-side with the REFLACX gaze overlay.
+   attention maps + MAIRA-2's emitted bbox + the radiologist bbox
+   side-by-side.
 4. **1-page project summary PDF** for the MBZUAI application.
 
-## Repository layout (planned)
+## Repository layout
 
 ```
 .
 ├── README.md           # this file
 ├── docs/
-│   └── extraction-spec.md  # methodology decisions (frozen, week 2 target)
+│   ├── extraction-spec.md      # methodology decisions (frozen)
+│   ├── prompts.md              # per-model prompt templates
+│   ├── vindr-class-synonyms.md # week-1 deliverable
+│   └── subset-sampling.md      # week-1 deliverable
 ├── paper/
-│   ├── skeleton.md     # outline + section bullets (current)
+│   ├── skeleton.md     # outline + section bullets
 │   ├── figures/        # generated figures
 │   └── tables/         # generated LaTeX tables
-├── scripts/            # numbered Python scripts (00_*, 01_*, ...)
+├── scripts/
+│   ├── modal/          # Modal-app entry points
+│   └── *.py            # local CLI scripts (00_*, 01_*, ...)
 ├── src/
 │   ├── attn/           # attention-extraction wrappers per model
-│   ├── metrics/        # alignment metrics + baselines
-│   └── eval/           # RadGraph-F1, NLI-hallucination
-├── data/               # gitignored: attention caches, gaze maps, metrics
+│   ├── metrics/        # alignment metrics + rasterization
+│   └── eval/           # RadGraph-XL, RaTEScore
+├── tests/              # 35+ unit tests; pure-numpy, no GPU
+├── data/               # gitignored: attention caches, bbox maps, metrics
 ├── notebooks/          # exploratory only
+├── pyproject.toml
 ├── requirements.txt
 └── reproduce.sh        # end-to-end from cached attentions to figures
 ```
 
-## Setup (placeholder)
+## Setup
 
 ```bash
-git clone <repo>.git && cd Probe_Research
-python -m venv venv && source venv/bin/activate     # or .\venv\Scripts\activate on Windows
+git clone https://github.com/SYEDFAIZAN1987/Probe_Research.git
+cd Probe_Research
+python -m venv venv
+.\venv\Scripts\Activate.ps1     # PowerShell on Windows
+# source venv/bin/activate      # bash on Linux/macOS
 pip install -r requirements.txt
-huggingface-cli login                                # MedGemma is gated
-# PhysioNet credentialed dataset — download REFLACX manually after approval
 ```
 
-GPU: Modal L40S 48 GB (per-second billing) or AMD MI300X 192 GB if the
+For the GPU phase, the project is deployed via [Modal](https://modal.com/):
+
+```bash
+pip install modal
+python -m modal setup           # browser OAuth
+```
+
+Then create two persistent Modal Volumes (one for HuggingFace model
+cache, one for VinDr-CXR data), upload your Kaggle API token as a
+Modal Secret, and run the downloader:
+
+```bash
+modal volume create gazeprobe-hf-cache
+modal volume create gazeprobe-data
+modal run scripts/modal/00_download_vindr.py
+```
+
+GPU: Modal L40S 48 GB (per-second billing) or AMD MI300X 192 GB if
+the [AMD AI Developer Program](https://www.amd.com/en/developer/ai-dev-program.html)
 free-credits application is approved. RTX 4090 24 GB is **not**
 sufficient in bf16 — LLaVA-Med-1.5 and MAIRA-2 OOM with long context.
 
 ## Phase 2 (future thesis pitch, not in this 8-week scope)
 
-This probe identifies *which* (model × pathology) cells suffer the largest
-attention–gaze gap. The natural Phase-2 thesis is a decode-time
-cross-attention intervention designed specifically for those failure cells,
-benchmarked against Look & Mark's prompt-level injection. Out of scope
-here.
+This probe identifies *which* (model × class) cells suffer the
+largest attention–bbox gap. The natural Phase-2 thesis is a
+decode-time cross-attention intervention designed specifically for
+those failure cells, benchmarked against Look & Mark's prompt-level
+injection. The temporal/scanpath gaze dimension (REFLACX, if
+credentialing comes through) is another natural extension.
 
 ## License
 
 Code: MIT (planned).
 No model weights are released by this repo; pointers only.
+See `DISCLAIMER.md` for clinical-use prohibitions per the MAIRA-2
+MSRLA terms.

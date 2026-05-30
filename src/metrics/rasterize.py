@@ -1,8 +1,13 @@
-"""Gaze and attention rasterization at the model's native grid and at a
-common cross-model grid.
+"""Gaze, bbox, and attention rasterization at the model's native grid
+and at a common cross-model grid.
 
 Implements the choices frozen in docs/extraction-spec.md §Q3:
-  - rasterize_gaze_to_grid:    fixations → (G, G) prob map via Gaussian KDE
+  - rasterize_bbox_to_grid:    list of bboxes → (G, G) binary mask /
+                               prob map. Used by BBoxProbe v1.
+  - rasterize_gaze_to_grid:    fixations → (G, G) prob map via Gaussian
+                               KDE. Kept for the GazeProbe v2 lineage
+                               (git tag gaze-v0.1) and for any future
+                               REFLACX work if PhysioNet access lands.
   - reshape_attention_to_grid: 1D attention over image tokens → (G, G)
   - upsample_to_common_grid:   any (Gx, Gy) → (56, 56) for cross-model
                                comparison via bilinear interpolation
@@ -15,7 +20,110 @@ import pandas as pd
 
 
 # --------------------------------------------------------------------- #
-# Gaze rasterization
+# Bbox rasterization (BBoxProbe v1 primary path)
+# --------------------------------------------------------------------- #
+
+def rasterize_bbox_to_grid(
+    bboxes: list[tuple[float, float, float, float]] | np.ndarray | pd.DataFrame,
+    image_hw: tuple[int, int],
+    grid_edge: int,
+    *,
+    as_probability: bool = True,
+) -> np.ndarray:
+    """Rasterize one or more bboxes (in original-image pixel coords)
+    onto a (grid_edge, grid_edge) mask.
+
+    Each grid cell whose CENTER lies inside the union of bboxes is set
+    to 1, else 0. Multi-rater bboxes are handled by passing the union
+    of all radiologists' annotations (see docs/extraction-spec.md §Q3
+    "multi-rater bbox handling").
+
+    Args:
+        bboxes: Iterable of (x_min, y_min, x_max, y_max) tuples in
+            pixel coordinates of the original image, OR a numpy array
+            of shape (N, 4), OR a DataFrame with columns named
+            x_min/y_min/x_max/y_max (case-insensitive).
+        image_hw: (H, W) of the original image, in pixels.
+        grid_edge: Output grid edge length (e.g. 16 for MedGemma native).
+        as_probability: If True (default), normalize the mask sum to 1
+            (probability distribution suitable for the KL metric). If
+            False, return a {0,1} binary mask (suitable for IoU /
+            Pointing-Game).
+
+    Returns:
+        np.ndarray of shape (grid_edge, grid_edge), dtype float32.
+        If as_probability=True and all bboxes are empty / outside the
+        image, the output is uniform (no-information signal) rather
+        than all-zeros, so KL is still well-defined.
+
+    Raises:
+        ValueError: if any bbox is malformed (x_max <= x_min, etc.)
+            when at least one bbox is provided.
+    """
+    rects = _normalize_bbox_input(bboxes)
+
+    H, W = image_hw
+    if grid_edge <= 0:
+        raise ValueError(f"grid_edge must be positive, got {grid_edge}")
+    if H <= 0 or W <= 0:
+        raise ValueError(f"image_hw must be positive, got {image_hw}")
+
+    # Grid-cell centers in pixel coordinates
+    cell_h = H / grid_edge
+    cell_w = W / grid_edge
+    cy = (np.arange(grid_edge) + 0.5) * cell_h            # (G,)
+    cx = (np.arange(grid_edge) + 0.5) * cell_w            # (G,)
+    mesh_y, mesh_x = np.meshgrid(cy, cx, indexing="ij")    # (G, G)
+
+    mask = np.zeros((grid_edge, grid_edge), dtype=bool)
+    for x_min, y_min, x_max, y_max in rects:
+        if x_max <= x_min or y_max <= y_min:
+            raise ValueError(
+                f"Malformed bbox ({x_min}, {y_min}, {x_max}, {y_max}): "
+                "x_max must exceed x_min and y_max must exceed y_min."
+            )
+        inside = (
+            (mesh_x >= x_min) & (mesh_x < x_max)
+            & (mesh_y >= y_min) & (mesh_y < y_max)
+        )
+        mask |= inside
+
+    if not as_probability:
+        return mask.astype(np.float32)
+
+    # Probability distribution. If empty, return uniform.
+    out = mask.astype(np.float32)
+    if out.sum() == 0:
+        return np.full((grid_edge, grid_edge), 1.0 / (grid_edge * grid_edge), dtype=np.float32)
+    return out / out.sum()
+
+
+def _normalize_bbox_input(bboxes) -> list[tuple[float, float, float, float]]:
+    """Coerce bbox input to a list of 4-tuples regardless of input format."""
+    if isinstance(bboxes, pd.DataFrame):
+        if len(bboxes) == 0:
+            return []
+        lc = {c.lower(): c for c in bboxes.columns}
+        try:
+            cols = (lc["x_min"], lc["y_min"], lc["x_max"], lc["y_max"])
+        except KeyError as e:
+            raise ValueError(
+                f"DataFrame missing bbox column {e}; have {list(bboxes.columns)}"
+            ) from None
+        return [tuple(row) for row in bboxes[list(cols)].itertuples(index=False, name=None)]
+
+    if isinstance(bboxes, np.ndarray):
+        if bboxes.size == 0:
+            return []
+        if bboxes.ndim != 2 or bboxes.shape[1] != 4:
+            raise ValueError(f"numpy bbox input must be (N, 4), got shape {bboxes.shape}")
+        return [tuple(row) for row in bboxes.tolist()]
+
+    return [tuple(b) for b in bboxes]
+
+
+# --------------------------------------------------------------------- #
+# Gaze rasterization (GazeProbe v2 path, kept for future)
 # --------------------------------------------------------------------- #
 
 def rasterize_gaze_to_grid(
