@@ -178,22 +178,20 @@ def run_pilot(n_cases: int = 50, seed: int = 0) -> dict:
     print(f"[*] smoke forward OK: {len(smoke_result.attentions)} layers, "
           f"img_pos count = {smoke_result.image_token_positions.numel()}")
 
-    # Diagnostic: per-layer attention tensor shapes. Anything that
-    # doesn't have the canonical (1, heads, seq, seq) LLM decoder shape
-    # is probably a vision-encoder or cross-attention tensor leaking
-    # into the .attentions tuple, and should be excluded from layer
-    # selection. This will surface if the "34 vs 32 layer" surprise
-    # repeats.
-    print("[*] per-layer attention shapes (first 5 and last 5):")
-    for li, a in list(enumerate(smoke_result.attentions))[:5]:
-        print(f"    L{li:2d}: {tuple(a.shape)}")
-    if len(smoke_result.attentions) > 10:
-        print("    ...")
-        for li, a in list(enumerate(smoke_result.attentions))[-5:]:
+    # Diagnostic: per-layer attention tensor shapes. If they're all
+    # the same shape, every layer is a real decoder layer (no vision-
+    # encoder cross-attention leaking in). If they differ (e.g. some
+    # rectangular for cross-attn), we'd need to filter — first run
+    # confirmed Gemma-3-4B-IT has 34 uniform decoder layers, no
+    # filtering needed.
+    smoke_shapes = {tuple(a.shape[-2:]) for a in smoke_result.attentions}
+    print(f"[*] {len(smoke_result.attentions)} attention tensors, "
+          f"{len(smoke_shapes)} distinct (q,k) shape(s): {smoke_shapes}")
+    if len(smoke_shapes) > 1:
+        print("[*] [WARN] mixed shapes — some attentions are not decoder "
+              "self-attention. Inspect before locking layer window.")
+        for li, a in enumerate(smoke_result.attentions):
             print(f"    L{li:2d}: {tuple(a.shape)}")
-    # Record the canonical decoder shape for filtering below.
-    decoder_shape_signature = tuple(smoke_result.attentions[len(smoke_result.attentions)//2].shape[-2:])
-    print(f"[*] presumed decoder shape signature: q×k = {decoder_shape_signature}")
 
     # ------------------------------------------------------------------ #
     # Phase 3 — Per-case extraction
@@ -249,12 +247,6 @@ def run_pilot(n_cases: int = 50, seed: int = 0) -> dict:
 
             G = extractor.native_grid[0]
             for layer_idx, attn in enumerate(result.attentions):
-                # Filter to only "real" LLM-decoder-shaped tensors. Anything
-                # whose (q, k) dimensions don't match the canonical
-                # signature is excluded from layer selection.
-                shape_sig = tuple(attn.shape[-2:])
-                if shape_sig != decoder_shape_signature:
-                    continue
                 a = attn[0].mean(dim=0)                          # (q, k)
                 a = a[a_start:a_end][content_mask][:, img_pos]   # (n_content, n_img)
                 if a.numel() == 0:
