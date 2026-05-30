@@ -82,7 +82,15 @@ data_vol = modal.Volume.from_name("gazeprobe-data", create_if_missing=True)
     image=image,
     volumes={"/data": data_vol},
     secrets=[modal.Secret.from_name("kaggle-token")],
-    timeout=60 * 60,  # 1 hour cap; should finish in 5-15 min
+    # Bumped from 1h after the previous run timed out partway through
+    # the 15k-file DICOM→PNG conversion. 6h is plenty even worst-case.
+    timeout=6 * 60 * 60,
+    # The DICOM conversion is now parallelized; ask for real cores
+    # so we actually get parallelism. Modal default is 0.125 CPU.
+    cpu=8.0,
+    # Local /tmp + /data fill up during unzip + PNG output; give the
+    # container enough scratch.
+    ephemeral_disk=300 * 1024,  # 300 GB
 )
 def download_all(
     competition: str = "vinbigdata-chest-xray-abnormalities-detection",
@@ -256,53 +264,73 @@ def download_all(
         (target / "sample_submission.csv").unlink()
 
     # ------------------------------------------------------------------ #
-    # Phase 4 — Optional DICOM → PNG conversion
+    # Phase 4 — Optional DICOM → PNG conversion (parallel)
     # ------------------------------------------------------------------ #
     print("=" * 64)
     print("Phase 4/4 — DICOM → PNG conversion" if convert_png else "Phase 4/4 — skipped")
     print("=" * 64)
     converted = skipped = failed = 0
     if convert_png:
-        import numpy as np
-        import pydicom
-        from PIL import Image
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         from tqdm import tqdm
 
         png_root = target / "train_png"
         png_root.mkdir(parents=True, exist_ok=True)
 
         dicoms = sorted((target / "train").glob("*.dicom"))
-        for dcm_path in tqdm(dicoms, desc="convert", unit="img"):
+        # Pre-filter so the worker pool only sees real work
+        todo = [d for d in dicoms if not (png_root / f"{d.stem}.png").exists()]
+        skipped = len(dicoms) - len(todo)
+        print(f"  total DICOMs:    {len(dicoms)}")
+        print(f"  already PNG:     {skipped}")
+        print(f"  to convert:      {len(todo)}")
+
+        # Heuristic: ThreadPoolExecutor with ~2x physical cores. The
+        # bottleneck is pydicom file I/O + numpy normalization +
+        # PIL encode, all of which release the GIL meaningfully.
+        n_workers = 16
+        commit_every = 1000
+
+        def _convert(dcm_path):
+            import numpy as np
+            import pydicom
+            from PIL import Image
             png_path = png_root / f"{dcm_path.stem}.png"
-            if png_path.exists():
-                skipped += 1
-                continue
             try:
                 arr = pydicom.dcmread(dcm_path).pixel_array
-                # Normalize to 0-255 uint8
                 arr = arr.astype(np.float32)
                 arr -= arr.min()
                 if arr.max() > 0:
                     arr = arr / arr.max() * 255
                 arr = arr.astype(np.uint8)
                 img = Image.fromarray(arr, mode="L")
-                # Resize so longest side = png_resolution, preserving aspect
                 w, h = img.size
                 if max(w, h) > png_resolution:
                     if w >= h:
-                        new_w = png_resolution
-                        new_h = int(h * png_resolution / w)
+                        new_w, new_h = png_resolution, int(h * png_resolution / w)
                     else:
-                        new_h = png_resolution
-                        new_w = int(w * png_resolution / h)
+                        new_h, new_w = png_resolution, int(w * png_resolution / h)
                     img = img.resize((new_w, new_h), Image.BILINEAR)
                 img.save(png_path, format="PNG")
-                converted += 1
+                return True, None
             except Exception as e:
-                print(f"  [WARN] {dcm_path.name}: {e}", file=sys.stderr)
-                failed += 1
+                return False, f"{dcm_path.name}: {e}"
 
-    # Commit volume so the downloaded data survives function teardown
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_convert, d): d for d in todo}
+            for i, fut in enumerate(tqdm(as_completed(futures), total=len(futures), desc="convert"), 1):
+                ok, err = fut.result()
+                if ok:
+                    converted += 1
+                else:
+                    failed += 1
+                    print(f"  [WARN] {err}", file=sys.stderr)
+                # Periodic commit so a late crash doesn't lose work
+                if commit_every and i % commit_every == 0:
+                    data_vol.commit()
+                    print(f"  intermediate commit at {i}/{len(futures)}")
+
+    # Final commit
     data_vol.commit()
 
     # ------------------------------------------------------------------ #
